@@ -47,11 +47,23 @@ but haven't been tried. Reports and pull requests are welcome.
 **GPU:** the virtual monitor needs a spare HDMI/DP port on an Intel or AMD GPU (see below).
 Encoding uses NVENC on NVIDIA, VA-API on Intel/AMD, or x264 on the CPU, whichever works first.
 
-**iPad:** any iPad with iOS 12 or later; one build of the app runs on all of them. Tested on iOS 12.
-On **iOS 16 and later**, turn on Settings → Privacy & Security → Developer Mode, or apps signed with a
-free Apple ID don't open. Known gaps on newer iPads (being worked on): on iOS 14+ the iPad
-may not find the computer on Wi-Fi by itself (enter its LAN address as the "internet address"
-for now), and iPads that aren't 4:3 show the app letterboxed.
+**iPad:** any 64-bit iPad with iOS 12 or later; one build of the app runs on all of them.
+Tested on an iPad mini 3 (iOS 12.5.8); the rest is expected from how iOS runs the app:
+
+| iPads | Expected |
+|---|---|
+| iPad mini 2, 3, 4, 5 · iPad Air (1st gen), Air 2 · iPad (5th, 6th gen) · iPad Pro 9.7" | **best fit:** native resolution, pixel for pixel |
+| iPad (7th–9th gen, 10.2") · iPad Air (3rd gen) · iPad Pro 10.5" · iPad Pro 12.9" (all) | works; iOS scales the app up from 1024×768, a little softer |
+| iPad Pro 11" (all) · iPad Air (4th gen+) · iPad (10th gen+) · iPad mini (6th gen+) | works; scaled, with black bars (not 4:3) |
+| iPad 1–4, iPad mini (1st gen) | not supported (32-bit, iOS 9–10 at most) |
+
+- **iOS 14 and later:** the iPad may not find the computer on Wi-Fi by itself (iOS restricts broadcasts);
+  enter the computer's local address under Settings → Internet address for now.
+- **iOS 16 and later:** turn on Settings → Privacy & Security → Developer Mode, or apps signed with a
+  free Apple ID don't open.
+
+Native resolution on every model and Bonjour discovery for iOS 14+ are planned once they can be
+tested on a newer iPad.
 
 ## Android?
 
