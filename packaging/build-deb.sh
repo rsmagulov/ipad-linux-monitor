@@ -35,6 +35,7 @@ Architecture: $ARCH
 Maintainer: rsmagulov <190504336+rsmagulov@users.noreply.github.com>
 Depends: libc6, $DEPS
 Recommends: usbmuxd, x11-xserver-utils, libnotify-bin
+Homepage: https://github.com/rsmagulov/ipad-linux-monitor
 Section: x11
 Priority: optional
 Description: old iPad as a second monitor for Linux (X11)

@@ -53,6 +53,12 @@ free Apple ID don't open. Known gaps on newer iPads (being worked on): on iOS 14
 may not find the computer on Wi-Fi by itself (enter its LAN address as the "internet address"
 for now), and iPads that aren't 4:3 show the app letterboxed.
 
+## Android?
+
+Connector is for iPads. For Android tablets there are good options already, for example
+[Orbiscreen](https://github.com/shadow-x78/orbiscreen) (an app, USB or Wi-Fi, X11 and Wayland, stylus)
+and [Weylus](https://github.com/H-M-H/Weylus) (in the tablet's browser, touch and stylus).
+
 ## Requirements
 
 - **Linux with X11** (see above)
