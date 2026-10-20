@@ -1,0 +1,14 @@
+#!/bin/sh
+# Builds, signs (saved free Apple ID) and installs the iPad app over the cable.
+# Run every 7 days, when the free signature expires. Log in first if asked:
+#   plumesign account login -u YOUR_APPLE_ID
+# plumesign comes with Impactor (github.com/claration/Impactor); set PLUMESIGN
+# to its path if it is not .deps/impactor/plumesign-fixed or on PATH.
+set -e
+DIR=$(cd "$(dirname "$0")/.." && pwd)
+PLUMESIGN=${PLUMESIGN:-$DIR/.deps/impactor/plumesign-fixed}
+[ -x "$PLUMESIGN" ] || PLUMESIGN=plumesign
+"$DIR/ios/build.sh"
+# --udid takes usbmuxd's device number; 1 is the first device plugged in
+"$PLUMESIGN" sign -p "$DIR/ios/Connector.ipa" --apple-id \
+    --register-and-install --udid "${1:-1}" 2>&1 | grep -v DEBUG

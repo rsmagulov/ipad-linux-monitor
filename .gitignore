@@ -1,0 +1,8 @@
+# downloaded toolchains, SDKs and libraries (see README)
+.deps/
+# build output
+host/connector-host
+ios/build/
+ios/Connector.ipa
+# local tool state
+.remember/

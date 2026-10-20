@@ -1,0 +1,29 @@
+#!/bin/sh
+# connector autostart on|off: start connector-service with the desktop session.
+DIR=$(cd "$(dirname "$0")/.." && pwd)
+FILE=${XDG_CONFIG_HOME:-$HOME/.config}/autostart/connector.desktop
+case "$1" in
+on)
+    mkdir -p "$(dirname "$FILE")"
+    cat > "$FILE" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Connector (iPad second screen)
+Comment=Turns the iPad into a second monitor when it is plugged in
+Exec=$DIR/scripts/connector-service
+X-GNOME-Autostart-enabled=true
+NoDisplay=false
+DESKTOP
+    echo "autostart enabled: $FILE"
+    ;;
+off)
+    rm -f "$FILE"
+    pkill -f "$DIR/scripts/connector-service" 2>/dev/null
+    pkill -f "$DIR/host/connector-host" 2>/dev/null
+    echo "autostart disabled"
+    ;;
+*)
+    echo "usage: $0 on|off" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,72 @@
+#!/bin/sh
+# Turns an unused (physically empty) HDMI/DP connector into a virtual
+# monitor that the desktop treats like a real one; connector-host streams it.
+# The port is detected once and saved (see connector-config).
+#
+#   connector-display on [WIDTHxHEIGHT]   default 1600x1200
+#   connector-display off
+#   connector-display status
+set -e
+. "$(dirname "$0")/connector-config"
+[ -n "$CONNECTOR_OUTPUT" ] && [ -n "$CONNECTOR_DRM" ] || {
+    echo "no spare HDMI/DP port found; set CONNECTOR_OUTPUT and CONNECTOR_DRM in $CONNECTOR_CONFIG" >&2
+    exit 1
+}
+OUTPUT=$CONNECTOR_OUTPUT
+CONNECTOR=$CONNECTOR_DRM
+SYSFS=$(ls -d /sys/class/drm/card*-"$CONNECTOR" 2>/dev/null | head -1)
+[ -n "$SYSFS" ] || { echo "no DRM connector $CONNECTOR found" >&2; exit 1; }
+
+force() {
+    if [ -w "$SYSFS/status" ]; then
+        echo "$1" > "$SYSFS/status"
+    else
+        echo "$SYSFS/status is not writable, using sudo (run scripts/install.sh once to avoid this)" >&2
+        echo "$1" | sudo tee "$SYSFS/status" > /dev/null
+    fi
+}
+
+connected() { xrandr | grep -q "^$OUTPUT connected"; }
+
+case "$1" in
+on)
+    MODE=${2:-${CONNECTOR_MODE:-1600x1200}}
+    W=${MODE%x*}; H=${MODE#*x}
+    force on
+    i=0
+    until connected; do
+        i=$((i + 1)); [ $i -lt 30 ] || { echo "$OUTPUT did not show up in xrandr" >&2; exit 1; }
+        sleep 0.1
+    done
+    NAME="connector-${W}x${H}"
+    if ! xrandr | grep -q "^ *$NAME "; then
+        # shellcheck disable=SC2046
+        xrandr --newmode "$NAME" $(cvt -r "$W" "$H" 60 | sed -n 's/^Modeline "[^"]*" *//p') 2>/dev/null || true
+    fi
+    xrandr --addmode "$OUTPUT" "$NAME" 2>/dev/null || true
+    # Keep the current position if it is already on (mode change, rotation);
+    # otherwise place it to the right of everything else.
+    POS=$(xrandr | awk -v o="$OUTPUT" '$1 == o { for (i = 3; i <= NF; i++)
+            if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$/) { split($i, a, /[x+]/); print a[3] "x" a[4] } }')
+    X=$(xrandr | awk -v o="$OUTPUT" '$1 != o && / connected/ {
+            for (i = 3; i <= NF; i++) if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$/) {
+                split($i, a, /[x+]/); if (a[1] + a[3] > m) m = a[1] + a[3] } }
+            END { print m + 0 }')
+    [ -n "$POS" ] || POS="${X}x0"
+    xrandr --output "$OUTPUT" --mode "$NAME" --pos "$POS"
+    echo "virtual display $OUTPUT: ${W}x${H} at $POS"
+    ;;
+off)
+    xrandr --output "$OUTPUT" --off 2>/dev/null || true
+    force detect
+    echo "virtual display $OUTPUT off"
+    ;;
+status)
+    echo "$SYSFS: $(cat "$SYSFS/status")"
+    xrandr | grep "^$OUTPUT " || true
+    ;;
+*)
+    echo "usage: $0 on [WIDTHxHEIGHT] | off | status" >&2
+    exit 2
+    ;;
+esac

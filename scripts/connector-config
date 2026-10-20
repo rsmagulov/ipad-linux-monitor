@@ -1,0 +1,43 @@
+# Sourced by the other scripts. Sets CONNECTOR_OUTPUT (xrandr name) and
+# CONNECTOR_DRM (kernel connector name) of the spare video port that becomes
+# the iPad's virtual monitor. The first detection is saved in
+# ~/.config/connector/config; edit or delete that file to pick another port.
+CONNECTOR_CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}/connector/config
+# shellcheck disable=SC1090
+[ -f "$CONNECTOR_CONFIG" ] && . "$CONNECTOR_CONFIG"
+
+# Prints "XRANDR_NAME DRM_NAME" of an HDMI/DP port with no monitor plugged in,
+# on a GPU whose kernel driver lets us force the port on (not NVIDIA's).
+connector_detect() {
+    for st in /sys/class/drm/card*-*/status; do
+        dir=${st%/status}
+        name=${dir##*/}
+        card=${name%%-*}
+        conn=${name#*-}
+        drv=$(basename "$(readlink -f "/sys/class/drm/$card/device/driver")")
+        case $drv in i915 | xe | amdgpu | radeon | nouveau) ;; *) continue ;; esac
+        case $conn in
+        HDMI-A-*) type=HDMI num=${conn#HDMI-A-} ;;
+        DP-*) type=DP num=${conn#DP-} ;;
+        *) continue ;;
+        esac
+        [ -s "$dir/edid" ] && continue # a real monitor is plugged in there
+        # modesetting names it HDMI-2, or HDMI-1-2 when it is a secondary GPU
+        out=$(xrandr 2>/dev/null | awk -v re="^$type-([0-9]+-)?$num\$" '$2 ~ /connected$/ && $1 ~ re { print $1; exit }')
+        [ -n "$out" ] || continue
+        echo "$out $conn"
+        return 0
+    done
+    return 1
+}
+
+if [ -z "$CONNECTOR_OUTPUT" ] || [ -z "$CONNECTOR_DRM" ]; then
+    if found=$(connector_detect); then
+        CONNECTOR_OUTPUT=${found% *}
+        CONNECTOR_DRM=${found#* }
+        mkdir -p "${CONNECTOR_CONFIG%/*}"
+        printf 'CONNECTOR_OUTPUT=%s\nCONNECTOR_DRM=%s\n' "$CONNECTOR_OUTPUT" "$CONNECTOR_DRM" > "$CONNECTOR_CONFIG"
+        echo "connector: using the spare port $CONNECTOR_DRM ($CONNECTOR_OUTPUT), saved in $CONNECTOR_CONFIG" >&2
+    fi
+fi
+export CONNECTOR_OUTPUT CONNECTOR_DRM

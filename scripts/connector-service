@@ -1,0 +1,17 @@
+#!/bin/sh
+# Autostart entry point: keeps connector-host running for the whole desktop
+# session. It idles until the iPad is plugged in and the Connector app is open,
+# then turns the virtual monitor on; it turns it off again after unplugging.
+DIR=$(cd "$(dirname "$0")/.." && pwd)
+. "$DIR/scripts/connector-config"
+LOG=${XDG_CACHE_HOME:-$HOME/.cache}/connector.log
+LOCK=${XDG_RUNTIME_DIR:-/tmp}/connector.lock
+
+exec 9>"$LOCK"
+flock -n 9 || { echo "connector-service is already running" >&2; exit 0; }
+
+while :; do
+    [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 1048576 ] && mv "$LOG" "$LOG.old"
+    "$DIR/host/connector-host" --manage-display ${CONNECTOR_OUTPUT:+-o "$CONNECTOR_OUTPUT"} "$@" >> "$LOG" 2>&1
+    sleep 2
+done
