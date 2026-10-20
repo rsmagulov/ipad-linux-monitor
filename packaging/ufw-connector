@@ -1,0 +1,4 @@
+[Connector]
+title=Connector (iPad as a second monitor)
+description=The iPad connects over Wi-Fi/internet (TCP) and finds the computer (UDP broadcast)
+ports=27183/tcp|27183/udp

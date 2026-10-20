@@ -1,6 +1,6 @@
 #!/bin/sh
 # connector autostart on|off: start connector-service with the desktop session.
-DIR=$(cd "$(dirname "$0")/.." && pwd)
+DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 FILE=${XDG_CONFIG_HOME:-$HOME/.config}/autostart/connector.desktop
 case "$1" in
 on)

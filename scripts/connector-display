@@ -7,7 +7,7 @@
 #   connector-display off
 #   connector-display status
 set -e
-. "$(dirname "$0")/connector-config"
+. "$(dirname "$(readlink -f "$0")")/connector-config"
 [ -n "$CONNECTOR_OUTPUT" ] && [ -n "$CONNECTOR_DRM" ] || {
     echo "no spare HDMI/DP port found; set CONNECTOR_OUTPUT and CONNECTOR_DRM in $CONNECTOR_CONFIG" >&2
     exit 1

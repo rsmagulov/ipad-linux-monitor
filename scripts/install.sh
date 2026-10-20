@@ -4,13 +4,12 @@
 # firewall port for Wi-Fi/internet connections.
 set -e
 [ "$(id -u)" = 0 ] || { echo "run as: sudo $0" >&2; exit 1; }
+DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 GROUP=plugdev
 
 # Any HDMI/DP port may become the virtual monitor (see connector-config).
-cat > /etc/udev/rules.d/70-connector-virtual-display.rules <<RULE
-# Connector (iPad second screen): allow group $GROUP to force HDMI/DP ports on/off
-ACTION=="add|change", SUBSYSTEM=="drm", KERNEL=="card*-HDMI-A-*|card*-DP-*", RUN+="/bin/sh -c 'chgrp $GROUP /sys%p/status; chmod g+w /sys%p/status'"
-RULE
+rm -f /etc/udev/rules.d/70-connector-virtual-display.rules # older versions
+[ -f /usr/lib/udev/rules.d/70-connector.rules ] || install -m644 "$DIR/scripts/70-connector.rules" /etc/udev/rules.d/
 udevadm control --reload
 
 for f in /sys/class/drm/card*-HDMI-A-*/status /sys/class/drm/card*-DP-*/status; do

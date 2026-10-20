@@ -9,7 +9,7 @@ the app targets **iOS 12**, so an iPad mini 2/3, iPad Air or newer works. The iP
 monitor to the desktop: you drag windows onto it, maximize them there, and arrange it in the
 display settings.
 
-- **Low latency:** H.264 via NVENC (or x264), hardware decoding on the iPad, unchanged frames skipped
+- **Low latency:** H.264 via NVENC, VA-API (Intel/AMD) or x264, hardware decoding on the iPad, unchanged frames skipped
 - **Cable, Wi-Fi or the internet:** USB through usbmuxd. The network uses TLS with a key paired over
   the cable, finds the computer on the local network by itself, and the cable takes over when plugged in
 - **Touch or trackpad:** tap to click, drag, right/middle click, two-finger scroll; or move the pointer like on a laptop trackpad
@@ -34,14 +34,33 @@ Works daily on one setup: Linux Mint 22 (Cinnamon, X11), a laptop with Intel + N
 iPad mini 3 on iOS 12.5.8. Other setups should work if they meet the requirements below,
 but haven't been tried. Reports and pull requests are welcome.
 
+## Compatibility
+
+**Linux:** any distribution, as long as the desktop session is **X11**:
+
+| Works (X11) | Doesn't work yet (Wayland) |
+|---|---|
+| Linux Mint (Cinnamon, MATE, Xfce) | Ubuntu 22.04+ by default (pick "Ubuntu on Xorg" at login instead) |
+| Debian, Ubuntu, Arch, Manjaro… with Xfce, MATE, Cinnamon, i3… | Fedora 40+ (GNOME, KDE) |
+| KDE Plasma with the X11 session | Pop!_OS 24.04 (COSMIC) |
+
+**GPU:** the virtual monitor needs a spare HDMI/DP port on an Intel or AMD GPU (see below).
+Encoding uses NVENC on NVIDIA, VA-API on Intel/AMD, or x264 on the CPU, whichever works first.
+
+**iPad:** any iPad with iOS 12 or later; one build of the app runs on all of them. Tested on iOS 12.
+On **iOS 16 and later**, turn on Settings → Privacy & Security → Developer Mode, or apps signed with a
+free Apple ID don't open. Known gaps on newer iPads (being worked on): on iOS 14+ the iPad
+may not find the computer on Wi-Fi by itself (enter its LAN address as the "internet address"
+for now), and iPads that aren't 4:3 show the app letterboxed.
+
 ## Requirements
 
-- **Linux with X11** (Wayland is not supported: the host captures and injects input via X11)
+- **Linux with X11** (see above)
 - **A spare HDMI or DisplayPort port** on an Intel or AMD GPU (i915/xe/amdgpu/radeon/nouveau kernel driver).
   Nothing gets plugged into it: the kernel is told a monitor is there, which makes a virtual
   monitor the desktop treats like a real one. NVIDIA's proprietary driver can't do this,
   but on hybrid laptops the Intel/AMD side usually has a port
-- An NVIDIA GPU for NVENC is optional; without it the host uses x264 (more CPU)
+- Hardware encoding (NVENC or VA-API) is optional; without it the host uses x264 (more CPU)
 - An iPad with iOS 12 or later and its Lightning/USB cable
 - A free Apple ID to sign the app (no developer account needed)
 
@@ -49,13 +68,28 @@ but haven't been tried. Reports and pull requests are welcome.
 
 ### 1. The host (Linux)
 
+**Debian, Ubuntu, Mint:** download `connector_*.deb` for your release from
+[Releases](../../releases), then
+
+```sh
+sudo apt install ./connector_*.deb
+sudo connector-setup        # lets your user switch the spare port, opens port 27183 in ufw
+connector-autostart on      # start with the desktop session (off: connector-autostart off)
+```
+
+**From source** (any distribution; package names below are Debian's):
+
 ```sh
 sudo apt install build-essential libx11-dev libxext-dev libxfixes-dev libxrandr-dev libxtst-dev \
     libavcodec-dev libavutil-dev libswscale-dev libusbmuxd-dev libssl-dev libxkbcommon-dev usbmuxd
-make -C host
+make                        # then run from here: scripts/..., or: sudo make install (to /usr/local)
 sudo scripts/install.sh     # lets your user switch the spare port, opens port 27183 in ufw
 scripts/autostart on        # start with the desktop session (off: scripts/autostart off)
 ```
+
+`make deb` builds the package for the release you're on. Commands below are given as in a
+source checkout (`scripts/connector`); with the package they are `connector`, `connector-display`,
+`connector-autostart`, `connector-ipad-install`, `connector-setup`.
 
 The spare port is detected on the first run and saved in `~/.config/connector/config`
 (`CONNECTOR_OUTPUT` is the xrandr name, `CONNECTOR_DRM` the kernel one, as in `/sys/class/drm/card*-NAME`).
@@ -64,16 +98,24 @@ should appear in the display settings. `scripts/connector-display off` removes i
 
 ### 2. The iPad app
 
-The app is built on Linux with clang and an iOS SDK, then signed and installed with
-[Impactor](https://github.com/claration/Impactor)'s `plumesign`.
+The app is signed with your Apple ID and installed over the cable by
+[Impactor](https://github.com/claration/Impactor)'s `plumesign`. The package and the
+[Releases](../../releases) include the built `Connector.ipa`:
+
+```sh
+plumesign account login -u YOUR_APPLE_ID   # once; enter the 2FA code
+connector-ipad-install                     # with the iPad plugged in and unlocked
+# from a source checkout: IPA=~/Downloads/Connector.ipa scripts/ipad-install
+```
+
+Building the app yourself takes clang, lld and an iOS SDK (`make ipa`):
 
 ```sh
 sudo apt install clang lld
-# an iOS SDK, e.g. iPhoneOS12.4.sdk from https://github.com/theos/sdks, into .deps/
-mkdir -p .deps && cp -r /path/to/iPhoneOS12.4.sdk .deps/
-
-plumesign account login -u YOUR_APPLE_ID   # once; enter the 2FA code
-scripts/ipad-install                       # with the iPad plugged in and unlocked
+git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks /tmp/sdks
+git -C /tmp/sdks sparse-checkout set iPhoneOS12.4.sdk
+mkdir -p .deps && mv /tmp/sdks/iPhoneOS12.4.sdk .deps/
+scripts/ipad-install                       # builds, signs and installs
 ```
 
 - On the iPad, trust the developer once: Settings → General → Device Management.
@@ -81,8 +123,8 @@ scripts/ipad-install                       # with the iPad plugged in and unlock
   Settings → [your name] → Password & Security → Get Verification Code.
 - Impactor 2.7.0's login fails with `Plist error: Serde(... <html> ...)`; use a release with
   the fix from claration/Impactor#288. Put `plumesign` on your PATH or set `PLUMESIGN=/path/to/plumesign`.
-- Each Apple ID needs its own bundle id. It defaults to `io.github.connector.<your user name>`;
-  set it in `~/.config/connector/bundle-id` to keep the one you installed with.
+- Each Apple ID needs its own bundle id: a unique one is made on the first install and kept
+  in `~/.config/connector/bundle-id`, so later installs update the same app.
 - **A free Apple ID signs for 7 days.** Run `scripts/ipad-install` again before it expires;
   the iPad and the computer remind you a day ahead.
 
@@ -151,8 +193,9 @@ Traffic is TLS 1.2 with the pre-shared key (PSK-AES128-GCM-SHA256); without the 
 connect. To unpair all iPads, delete `~/.config/connector/key`, restart the service and pair by cable again.
 
 Peak bitrate: 80 Mbit/s by cable, 30 over Wi-Fi, 10 over the internet (`--lan-bitrate`,
-`--internet-bitrate`). When the network can't keep up, the host skips frames instead of queueing
-them, so latency doesn't build up. USB only: `--no-network`.
+`--internet-bitrate`; VA-API drivers that only do constant quality ignore it). When the network
+can't keep up, the host skips frames instead of queueing them, so latency doesn't build up.
+USB only: `--no-network`; network only: `--no-usb`; another port: `--listen-port`.
 
 ## Troubleshooting
 
@@ -177,6 +220,7 @@ them, so latency doesn't build up. USB only: `--no-network`.
 | `scripts/connector-service`, `scripts/autostart` | the background service and its autostart |
 | `scripts/ipad-install` | builds, signs and installs the app |
 | `scripts/install.sh` | one-time setup (sudo) |
+| `Makefile`, `packaging/` | `make install`, `make deb` |
 
 ## License
 

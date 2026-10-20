@@ -6,7 +6,8 @@
  *   capture  : XShm grab of the output's rectangle on the root window,
  *              cursor composited from XFixes; unchanged frames are skipped
  *   encode   : H.264 via NVENC (BGR0 input, no CPU colour conversion),
- *              libx264 as a fallback
+ *              else VA-API (Intel/AMD; NV12 converted on the CPU, then
+ *              uploaded), else libx264
  *   transport: usbmuxd -> TCP port CONNECTOR_PORT on the iPad, or the iPad
  *              connects to our CONNECTOR_PORT (TLS-PSK, key paired over USB);
  *              the cable wins when both are available
@@ -49,6 +50,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
@@ -75,6 +77,7 @@ static struct {
     int port;
     int listen_port;
     int network;
+    int usb;
     const char *address;
     int verbose;
     int manage_display;
@@ -92,6 +95,7 @@ static struct {
     .port = CONNECTOR_PORT,
     .listen_port = CONNECTOR_PORT,
     .network = 1,
+    .usb = 1,
     .grace = 10,
 };
 
@@ -320,9 +324,10 @@ static void x11_drain_events(X11 *x)
 
 typedef struct {
     AVCodecContext *ctx;
-    AVFrame *frame;
+    AVFrame *frame; /* BGR0 wrapper (NVENC) or the converted YUV frame */
     AVPacket *pkt;
     struct SwsContext *sws;
+    AVBufferRef *hw_device, *hw_frames; /* VA-API */
     int64_t pts;
     int mbps; /* peak bitrate, depends on how the iPad is connected */
 } Encoder;
@@ -334,14 +339,14 @@ static void encoder_close(Encoder *e)
     av_packet_free(&e->pkt);
     sws_freeContext(e->sws);
     e->sws = NULL;
+    av_buffer_unref(&e->hw_frames);
+    av_buffer_unref(&e->hw_device);
 }
 
-static int encoder_try(Encoder *e, const char *name, int w, int h)
+/* Settings shared by all encoders: no B-frames, long GOP (keyframes on demand),
+ * BT.709 limited range like the iPad expects. */
+static AVCodecContext *encoder_context(const AVCodec *codec, Encoder *e, int w, int h, enum AVPixelFormat fmt)
 {
-    const AVCodec *codec = avcodec_find_encoder_by_name(name);
-    if (!codec)
-        return 0;
-    int nvenc = strstr(name, "nvenc") != NULL;
     AVCodecContext *c = avcodec_alloc_context3(codec);
     c->width = w;
     c->height = h;
@@ -349,7 +354,7 @@ static int encoder_try(Encoder *e, const char *name, int w, int h)
     c->framerate = (AVRational){opt.fps, 1};
     c->gop_size = opt.fps * 10;
     c->max_b_frames = 0;
-    c->pix_fmt = nvenc ? AV_PIX_FMT_BGR0 : AV_PIX_FMT_YUV420P;
+    c->pix_fmt = fmt;
     c->rc_max_rate = (int64_t)e->mbps * 1000000;
     c->bit_rate = c->rc_max_rate / 2;
     c->rc_buffer_size = (int)(c->rc_max_rate / opt.fps * 4);
@@ -358,41 +363,109 @@ static int encoder_try(Encoder *e, const char *name, int w, int h)
     c->colorspace = AVCOL_SPC_BT709;
     c->color_primaries = AVCOL_PRI_BT709;
     c->color_trc = AVCOL_TRC_BT709;
+    return c;
+}
 
+/* VA-API: tries each GPU render node and the encoder variants drivers offer.
+ * Returns an opened context or NULL. */
+static AVCodecContext *vaapi_open(const AVCodec *codec, Encoder *e, int w, int h)
+{
+    /* QVBR/VBR cap the bitrate; many drivers only do constant QP (the
+     * network path still skips frames when the link is full). */
+    static const char *const rc_modes[] = {"QVBR", "VBR", "CQP"};
+    for (int node = 128; node < 136; node++) {
+        char dev[32];
+        snprintf(dev, sizeof(dev), "/dev/dri/renderD%d", node);
+        if (access(dev, R_OK | W_OK) != 0)
+            continue;
+        av_log_set_level(AV_LOG_QUIET); /* probing prints errors for every miss */
+        AVBufferRef *device = NULL;
+        if (av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_VAAPI, dev, NULL, 0) < 0) {
+            av_log_set_level(AV_LOG_ERROR);
+            continue;
+        }
+        AVBufferRef *frames = av_hwframe_ctx_alloc(device);
+        AVHWFramesContext *fc = (AVHWFramesContext *)frames->data;
+        fc->format = AV_PIX_FMT_VAAPI;
+        fc->sw_format = AV_PIX_FMT_NV12;
+        fc->width = w;
+        fc->height = h;
+        fc->initial_pool_size = 8;
+        if (av_hwframe_ctx_init(frames) == 0) {
+            /* newer Intel chips only have the low-power encoder */
+            for (int lp = 0; lp < 2; lp++) {
+                for (int m = 0; m < 3; m++) {
+                    AVCodecContext *c = encoder_context(codec, e, w, h, AV_PIX_FMT_VAAPI);
+                    c->hw_frames_ctx = av_buffer_ref(frames);
+                    av_opt_set(c->priv_data, "low_power", lp ? "1" : "0", 0);
+                    av_opt_set(c->priv_data, "async_depth", "1", 0);
+                    av_opt_set(c->priv_data, "rc_mode", rc_modes[m], 0);
+                    av_opt_set(c->priv_data, "profile", "high", 0);
+                    c->global_quality = opt.quality;
+                    av_opt_set_int(c->priv_data, "qp", opt.quality, 0);
+                    if (avcodec_open2(c, codec, NULL) == 0) {
+                        av_log_set_level(AV_LOG_ERROR);
+                        e->hw_device = device;
+                        e->hw_frames = frames;
+                        logmsg("VA-API on %s: %s%s rate control", dev, rc_modes[m], lp ? ", low-power" : "");
+                        return c;
+                    }
+                    avcodec_free_context(&c);
+                }
+            }
+        }
+        av_buffer_unref(&frames);
+        av_buffer_unref(&device);
+        av_log_set_level(AV_LOG_ERROR);
+    }
+    return NULL;
+}
+
+static int encoder_try(Encoder *e, const char *name, int w, int h)
+{
+    const AVCodec *codec = avcodec_find_encoder_by_name(name);
+    if (!codec)
+        return 0;
+    int nvenc = strstr(name, "nvenc") != NULL, vaapi = strstr(name, "vaapi") != NULL;
+    AVCodecContext *c;
     char q[16];
     snprintf(q, sizeof(q), "%d", opt.quality);
-    if (nvenc) {
-        av_opt_set(c->priv_data, "preset", "p1", 0);
-        av_opt_set(c->priv_data, "tune", "ull", 0);
-        av_opt_set(c->priv_data, "profile", "high", 0);
-        av_opt_set(c->priv_data, "rc", "vbr", 0);
-        av_opt_set(c->priv_data, "cq", q, 0);
-        av_opt_set(c->priv_data, "zerolatency", "1", 0);
-        av_opt_set(c->priv_data, "delay", "0", 0);
-        av_opt_set(c->priv_data, "forced-idr", "1", 0);
+    if (vaapi) {
+        if (!(c = vaapi_open(codec, e, w, h)))
+            return 0;
     } else {
-        av_opt_set(c->priv_data, "preset", "ultrafast", 0);
-        av_opt_set(c->priv_data, "tune", "zerolatency", 0);
-        av_opt_set(c->priv_data, "crf", q, 0);
-        av_opt_set(c->priv_data, "forced-idr", "1", 0);
-    }
-
-    if (avcodec_open2(c, codec, NULL) < 0) {
-        avcodec_free_context(&c);
-        return 0;
+        c = encoder_context(codec, e, w, h, nvenc ? AV_PIX_FMT_BGR0 : AV_PIX_FMT_YUV420P);
+        if (nvenc) {
+            av_opt_set(c->priv_data, "preset", "p1", 0);
+            av_opt_set(c->priv_data, "tune", "ull", 0);
+            av_opt_set(c->priv_data, "profile", "high", 0);
+            av_opt_set(c->priv_data, "rc", "vbr", 0);
+            av_opt_set(c->priv_data, "cq", q, 0);
+            av_opt_set(c->priv_data, "zerolatency", "1", 0);
+            av_opt_set(c->priv_data, "delay", "0", 0);
+            av_opt_set(c->priv_data, "forced-idr", "1", 0);
+        } else {
+            av_opt_set(c->priv_data, "preset", "ultrafast", 0);
+            av_opt_set(c->priv_data, "tune", "zerolatency", 0);
+            av_opt_set(c->priv_data, "crf", q, 0);
+            av_opt_set(c->priv_data, "forced-idr", "1", 0);
+        }
+        if (avcodec_open2(c, codec, NULL) < 0) {
+            avcodec_free_context(&c);
+            return 0;
+        }
     }
     e->ctx = c;
     e->pkt = av_packet_alloc();
     e->frame = av_frame_alloc();
-    e->frame->format = c->pix_fmt;
+    e->frame->format = nvenc ? AV_PIX_FMT_BGR0 : vaapi ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
     e->frame->width = w;
     e->frame->height = h;
     e->frame->color_range = c->color_range;
     e->frame->colorspace = c->colorspace;
     if (!nvenc) {
         av_frame_get_buffer(e->frame, 0);
-        e->sws = sws_getContext(w, h, AV_PIX_FMT_BGR0, w, h, AV_PIX_FMT_YUV420P,
-                                SWS_POINT, NULL, NULL, NULL);
+        e->sws = sws_getContext(w, h, AV_PIX_FMT_BGR0, w, h, e->frame->format, SWS_POINT, NULL, NULL, NULL);
         /* full-range RGB in, limited-range BT.709 out (matches the stream's VUI) */
         sws_setColorspaceDetails(e->sws, sws_getCoefficients(SWS_CS_DEFAULT), 1,
                                  sws_getCoefficients(SWS_CS_ITU709), 0, 0, 1 << 16, 1 << 16);
@@ -406,12 +479,48 @@ static int encoder_open(Encoder *e, int w, int h)
     encoder_close(e);
     e->pts = 0;
     if (strcmp(opt.encoder, "auto") == 0)
-        return encoder_try(e, "h264_nvenc", w, h) || encoder_try(e, "libx264", w, h);
+        return encoder_try(e, "h264_nvenc", w, h) || encoder_try(e, "h264_vaapi", w, h) ||
+               encoder_try(e, "libx264", w, h);
     if (strcmp(opt.encoder, "nvenc") == 0)
         return encoder_try(e, "h264_nvenc", w, h);
+    if (strcmp(opt.encoder, "vaapi") == 0)
+        return encoder_try(e, "h264_vaapi", w, h);
     if (strcmp(opt.encoder, "x264") == 0)
         return encoder_try(e, "libx264", w, h);
     return encoder_try(e, opt.encoder, w, h);
+}
+
+/* Encodes one captured BGR0 frame; packets are then read from e->ctx. */
+static int encoder_send(Encoder *e, uint8_t *bgr0, int stride, int h, int idr)
+{
+    AVFrame *f = e->frame;
+    if (e->sws) {
+        const uint8_t *src[1] = {bgr0};
+        av_frame_make_writable(f);
+        sws_scale(e->sws, src, &stride, 0, h, f->data, f->linesize);
+    } else {
+        f->data[0] = bgr0;
+        f->linesize[0] = stride;
+    }
+    f->pts = e->pts++;
+    f->pict_type = idr ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    int rc;
+    if (e->hw_frames) {
+        AVFrame *hw = av_frame_alloc();
+        rc = av_hwframe_get_buffer(e->hw_frames, hw, 0);
+        if (rc == 0)
+            rc = av_hwframe_transfer_data(hw, f, 0);
+        if (rc == 0) {
+            av_frame_copy_props(hw, f);
+            rc = avcodec_send_frame(e->ctx, hw);
+        }
+        av_frame_free(&hw);
+    } else {
+        rc = avcodec_send_frame(e->ctx, f);
+    }
+    if (!e->sws)
+        f->data[0] = NULL;
+    return rc == 0;
 }
 
 /* ---------------------------------------------------------------- transport */
@@ -1089,13 +1198,17 @@ static void sig_store(uint32_t expires)
     logmsg("iPad app signature valid until %s", date);
 }
 
+/* Shows a desktop notification without waiting for it (notify-send can take
+ * seconds); the previous one is reaped on the next call. */
 static void notify(const char *title, const char *body)
 {
+    static pid_t pid;
+    if (pid > 0)
+        waitpid(pid, NULL, WNOHANG);
     char *argv[] = {"notify-send", "-i", "video-display", "-a", "Connector", (char *)title, (char *)body, NULL};
-    pid_t pid;
     extern char **environ;
-    if (posix_spawnp(&pid, "notify-send", NULL, NULL, argv, environ) == 0)
-        waitpid(pid, NULL, 0);
+    if (posix_spawnp(&pid, "notify-send", NULL, NULL, argv, environ) != 0)
+        pid = 0;
 }
 
 /* Called now and then: a reminder a day before expiry, and every few hours after. */
@@ -1106,18 +1219,23 @@ static void sig_check(void)
         return;
     sig.notified = now;
     int ru = getenv("LANG") && strncmp(getenv("LANG"), "ru", 2) == 0;
-    char date[64], body[8192];
+    char date[64], body[8192], cmd[4200];
     strftime(date, sizeof(date), "%d.%m %H:%M", localtime(&sig.expires));
+    /* installed: on PATH; a source checkout: the script itself */
+    if (strncmp(opt.root, "/usr/", 5) == 0)
+        snprintf(cmd, sizeof(cmd), "connector-ipad-install");
+    else
+        snprintf(cmd, sizeof(cmd), "%s/scripts/ipad-install", opt.root);
     if (now < sig.expires)
         snprintf(body, sizeof(body),
-                 ru ? "Подпись приложения на iPad истекает %s. Подключите iPad кабелем и запустите\n%s/scripts/ipad-install"
-                    : "The iPad app's signature expires %s. Plug the iPad in and run\n%s/scripts/ipad-install",
-                 date, opt.root);
+                 ru ? "Подпись приложения на iPad истекает %s. Подключите iPad кабелем и запустите\n%s"
+                    : "The iPad app's signature expires %s. Plug the iPad in and run\n%s",
+                 date, cmd);
     else
         snprintf(body, sizeof(body),
-                 ru ? "Подпись приложения на iPad истекла, оно не откроется. Подключите iPad кабелем и запустите\n%s/scripts/ipad-install"
-                    : "The iPad app's signature has expired; it won't open. Plug the iPad in and run\n%s/scripts/ipad-install",
-                 opt.root);
+                 ru ? "Подпись приложения на iPad истекла, оно не откроется. Подключите iPad кабелем и запустите\n%s"
+                    : "The iPad app's signature has expired; it won't open. Plug the iPad in and run\n%s",
+                 cmd);
     logmsg("%s", body);
     notify(ru ? "Connector: продлите подпись приложения" : "Connector: re-sign the iPad app", body);
 }
@@ -1276,9 +1394,11 @@ static void usage(const char *argv0)
             "  -f, --fps N          frame rate (default %d)\n"
             "  -b, --bitrate MBPS   peak bitrate in Mbit/s (default %d)\n"
             "  -q, --quality N      constant quality, lower is sharper (default %d)\n"
-            "  -e, --encoder NAME   auto | nvenc | x264 | <ffmpeg encoder> (default auto)\n"
+            "  -e, --encoder NAME   auto | nvenc | vaapi | x264 | <ffmpeg encoder> (default auto:\n"
+            "                       the first that works of nvenc, vaapi, x264)\n"
             "  -p, --port N         TCP port of the iPad app (default %d)\n"
             "  -n, --no-network     USB only: don't accept the iPad over Wi-Fi/internet\n"
+            "  -U, --no-usb         network only: don't look for the iPad on USB\n"
             "  -P, --listen-port N  TCP/UDP port for Wi-Fi/internet (default %d)\n"
             "  -a, --address HOST[:PORT]\n"
             "                       internet address of this computer, handed to the iPad\n"
@@ -1301,13 +1421,14 @@ int main(int argc, char **argv)
         {"encoder", required_argument, 0, 'e'}, {"port", required_argument, 0, 'p'},
         {"list", no_argument, 0, 'l'},          {"verbose", no_argument, 0, 'v'},
         {"manage-display", no_argument, 0, 'm'}, {"no-network", no_argument, 0, 'n'},
+        {"no-usb", no_argument, 0, 'U'},
         {"address", required_argument, 0, 'a'}, {"listen-port", required_argument, 0, 'P'},
         {"lan-bitrate", required_argument, 0, 'L'},
         {"internet-bitrate", required_argument, 0, 'I'},
         {"help", no_argument, 0, 'h'},          {0, 0, 0, 0},
     };
     int list_only = 0, c;
-    while ((c = getopt_long(argc, argv, "o:f:b:q:e:p:P:a:lmnvh", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "o:f:b:q:e:p:P:a:lmnUvh", longopts, NULL)) != -1) {
         switch (c) {
         case 'o': opt.output = optarg; break;
         case 'f': opt.fps = atoi(optarg); break;
@@ -1319,6 +1440,7 @@ int main(int argc, char **argv)
         case 'v': opt.verbose = 1; break;
         case 'm': opt.manage_display = 1; break;
         case 'n': opt.network = 0; break;
+        case 'U': opt.usb = 0; break;
         case 'a': opt.address = optarg; break;
         case 'P': opt.listen_port = atoi(optarg); break;
         case 'L': opt.lan_mbps = atoi(optarg); break;
@@ -1327,7 +1449,7 @@ int main(int argc, char **argv)
         }
     }
     if (opt.fps < 1 || opt.fps > 240 || opt.bitrate_mbps < 1 || opt.lan_mbps < 1 || opt.internet_mbps < 1 ||
-        opt.listen_port < 1 || opt.listen_port > 65535) {
+        opt.listen_port < 1 || opt.listen_port > 65535 || (!opt.network && !opt.usb)) {
         usage(argv[0]);
         return 2;
     }
@@ -1448,7 +1570,7 @@ int main(int argc, char **argv)
         }
 
         /* The cable is tried even during a network session: it wins. */
-        if (now >= next_connect && (link.fd < 0 || link.kind != LINK_USB)) {
+        if (opt.usb && now >= next_connect && (link.fd < 0 || link.kind != LINK_USB)) {
             next_connect = now + (link.fd < 0 ? 1.0 : 2.0);
             int fd = device_connect();
             if (fd >= 0) {
@@ -1522,29 +1644,16 @@ int main(int argc, char **argv)
                 if (changed) {
                     memcpy(prev, x.img->data, frame_bytes);
                     double t0 = now_sec();
-                    AVFrame *f = enc.frame;
-                    if (enc.sws) {
-                        const uint8_t *src[1] = {(uint8_t *)x.img->data};
-                        int stride[1] = {x.img->bytes_per_line};
-                        av_frame_make_writable(f);
-                        sws_scale(enc.sws, src, stride, 0, x.area.h, f->data, f->linesize);
-                    } else {
-                        f->data[0] = (uint8_t *)x.img->data;
-                        f->linesize[0] = x.img->bytes_per_line;
-                    }
-                    f->pts = enc.pts++;
-                    f->pict_type = in.want_keyframe ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
                     if (in.want_keyframe) {
                         last_idr = now;
                         in.keyframe_requested = 0;
                     }
+                    int idr = in.want_keyframe;
                     in.want_keyframe = 0;
-                    if (avcodec_send_frame(enc.ctx, f) < 0) {
+                    if (!encoder_send(&enc, (uint8_t *)x.img->data, x.img->bytes_per_line, x.area.h, idr)) {
                         logmsg("encode error");
                         return 1;
                     }
-                    if (!enc.sws)
-                        f->data[0] = NULL;
                     while (avcodec_receive_packet(enc.ctx, enc.pkt) == 0) {
                         int ok = send_msg(&link, MSG_VIDEO, enc.pkt->data, enc.pkt->size);
                         stat_bytes += enc.pkt->size;

@@ -1,0 +1,50 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # the release step
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libx11-dev libxext-dev libxfixes-dev libxrandr-dev \
+            libxtst-dev libavcodec-dev libavutil-dev libswscale-dev libusbmuxd-dev libssl-dev \
+            libxkbcommon-dev clang lld shellcheck
+
+      - name: Check scripts
+        run: shellcheck -S warning scripts/connector scripts/connector-display scripts/connector-service scripts/autostart scripts/ipad-install scripts/install.sh packaging/build-deb.sh ios/build.sh
+
+      - name: iOS SDK
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks /tmp/sdks
+          git -C /tmp/sdks sparse-checkout set iPhoneOS12.4.sdk
+          mkdir -p .deps && mv /tmp/sdks/iPhoneOS12.4.sdk .deps/
+
+      - name: Build the host, the iPad app and the package
+        run: |
+          make
+          make ipa
+          make deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: connector
+          path: |
+            connector_*.deb
+            ios/Connector.ipa
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" connector_*.deb ios/Connector.ipa --generate-notes

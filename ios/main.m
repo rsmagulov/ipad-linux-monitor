@@ -805,7 +805,7 @@ static void scheduleResignReminders(NSDate *expires)
             UNMutableNotificationContent *m = [[UNMutableNotificationContent alloc] init];
             m.title = L(@"Connector needs re-signing");
             m.body = [NSString stringWithFormat:L(@"The app stops opening on %@. Plug the iPad into the computer "
-                                                  @"and run scripts/ipad-install."), shortDate(expires)];
+                                                  @"and run ipad-install from Connector."), shortDate(expires)];
             m.sound = UNNotificationSound.defaultSound;
             UNTimeIntervalNotificationTrigger *t = [UNTimeIntervalNotificationTrigger triggerWithTimeInterval:in
                                                                                                       repeats:NO];

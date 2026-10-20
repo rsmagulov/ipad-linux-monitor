@@ -1,0 +1,3 @@
+# Connector (iPad second screen): lets group plugdev force HDMI/DP ports on/off,
+# which turns a spare port into a virtual monitor.
+ACTION=="add|change", SUBSYSTEM=="drm", KERNEL=="card*-HDMI-A-*|card*-DP-*", RUN+="/bin/sh -c 'chgrp plugdev /sys%p/status; chmod g+w /sys%p/status'"

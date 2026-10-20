@@ -1,14 +1,33 @@
 #!/bin/sh
-# Builds, signs (saved free Apple ID) and installs the iPad app over the cable.
-# Run every 7 days, when the free signature expires. Log in first if asked:
-#   plumesign account login -u YOUR_APPLE_ID
+# Signs the iPad app with your free Apple ID and installs it over the cable.
+# Run it again before the free signature expires after 7 days (you get reminded).
+# Log in once first:  plumesign account login -u YOUR_APPLE_ID
 # plumesign comes with Impactor (github.com/claration/Impactor); set PLUMESIGN
-# to its path if it is not .deps/impactor/plumesign-fixed or on PATH.
+# if it is not on PATH.
+#   ipad-install [DEVICE]   DEVICE: usbmuxd device number, 1 = the first plugged in
 set -e
-DIR=$(cd "$(dirname "$0")/.." && pwd)
+DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}/connector
+IPA=${IPA:-$DIR/ios/Connector.ipa} # or a Connector.ipa downloaded from the releases
 PLUMESIGN=${PLUMESIGN:-$DIR/.deps/impactor/plumesign-fixed}
 [ -x "$PLUMESIGN" ] || PLUMESIGN=plumesign
-"$DIR/ios/build.sh"
-# --udid takes usbmuxd's device number; 1 is the first device plugged in
-"$PLUMESIGN" sign -p "$DIR/ios/Connector.ipa" --apple-id \
+command -v "$PLUMESIGN" >/dev/null || {
+    echo "plumesign not found: install Impactor (github.com/claration/Impactor) or set PLUMESIGN" >&2
+    exit 1
+}
+
+# A source checkout builds the app (needs an iOS SDK); packages ship it built.
+if [ -f "$DIR/ios/main.m" ] && [ "$IPA" = "$DIR/ios/Connector.ipa" ]; then
+    "$DIR/ios/build.sh" || { [ -f "$IPA" ] && echo "using the existing $IPA" >&2; } || exit 1
+fi
+[ -f "$IPA" ] || { echo "no $IPA" >&2; exit 1; }
+
+# Each Apple ID needs its own bundle id; keeping it lets updates replace the app.
+if [ ! -s "$CONFIG/bundle-id" ]; then
+    mkdir -p "$CONFIG"
+    echo "io.github.connector.$(id -un | tr -cd 'a-zA-Z0-9' | head -c 20)$(od -An -N2 -tx2 /dev/urandom | tr -d ' ')" \
+        > "$CONFIG/bundle-id"
+fi
+
+"$PLUMESIGN" sign -p "$IPA" --apple-id --custom-identifier "$(cat "$CONFIG/bundle-id")" \
     --register-and-install --udid "${1:-1}" 2>&1 | grep -v DEBUG

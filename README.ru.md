@@ -9,7 +9,7 @@
 Для системы iPad — обычный монитор: окна перетаскиваются на него, разворачиваются на нём,
 расположение меняется в настройках экрана.
 
-- **Малая задержка:** H.264 через NVENC (или x264), аппаратный декодер на iPad, неизменные кадры не передаются
+- **Малая задержка:** H.264 через NVENC, VA-API (Intel/AMD) или x264, аппаратный декодер на iPad, неизменные кадры не передаются
 - **Кабель, Wi-Fi или интернет:** USB через usbmuxd. По сети — TLS с ключом, полученным по кабелю.
   Компьютер в локальной сети находится сам, а подключённый кабель перехватывает соединение
 - **Касание или тачпад:** клик касанием, перетаскивание, правая/средняя кнопка, прокрутка двумя пальцами;
@@ -25,13 +25,32 @@
 iPad mini 3 с iOS 12.5.8. На других системах, подходящих под требования, должно работать, но не проверялось.
 Сообщения об ошибках и pull request'ы приветствуются.
 
+## Совместимость
+
+**Linux:** любой дистрибутив, если сеанс рабочего стола — **X11**:
+
+| Работает (X11) | Пока не работает (Wayland) |
+|---|---|
+| Linux Mint (Cinnamon, MATE, Xfce) | Ubuntu 22.04+ по умолчанию (на экране входа можно выбрать «Ubuntu on Xorg») |
+| Debian, Ubuntu, Arch, Manjaro… с Xfce, MATE, Cinnamon, i3… | Fedora 40+ (GNOME, KDE) |
+| KDE Plasma в сеансе X11 | Pop!_OS 24.04 (COSMIC) |
+
+**Видеокарта:** для виртуального монитора нужен свободный разъём HDMI/DP на Intel или AMD (см. ниже).
+Кодирование — NVENC на NVIDIA, VA-API на Intel/AMD или x264 на процессоре: что заработает первым.
+
+**iPad:** любой с iOS 12 или новее, одна сборка приложения для всех. Проверено на iOS 12.
+На **iOS 16 и новее** включите Настройки → Конфиденциальность и безопасность → Режим разработчика,
+иначе приложения, подписанные бесплатным Apple ID, не открываются. Известные пробелы на новых iPad
+(в работе): на iOS 14+ iPad может не найти компьютер в Wi-Fi сам (пока введите его адрес в локальной
+сети как «адрес в интернете»), а на iPad с пропорциями не 4:3 приложение показывается с рамками.
+
 ## Требования
 
-- **Linux с X11** (Wayland не поддерживается: захват и ввод сделаны через X11)
+- **Linux с X11** (см. выше)
 - **Свободный разъём HDMI или DisplayPort** на видеокарте Intel или AMD (драйвер ядра i915/xe/amdgpu/radeon/nouveau).
   В него ничего не вставляется: ядру говорят, что монитор подключён, и система получает виртуальный монитор.
   Проприетарный драйвер NVIDIA так не умеет, но на гибридных ноутбуках разъём обычно есть у Intel/AMD
-- NVIDIA для NVENC — по желанию; без неё используется x264 (больше нагрузка на процессор)
+- Аппаратное кодирование (NVENC или VA-API) — по желанию; без него используется x264 (больше нагрузка на процессор)
 - iPad с iOS 12 или новее и кабель
 - Бесплатный Apple ID для подписи приложения (аккаунт разработчика не нужен)
 
@@ -39,13 +58,27 @@ iPad mini 3 с iOS 12.5.8. На других системах, подходящ�
 
 ### 1. Хост (Linux)
 
+**Debian, Ubuntu, Mint:** скачайте `connector_*.deb` для своего выпуска из [Releases](../../releases), затем
+
+```sh
+sudo apt install ./connector_*.deb
+sudo connector-setup        # права на свободный разъём, порт 27183 в ufw
+connector-autostart on      # запуск вместе с сеансом (выключить: connector-autostart off)
+```
+
+**Из исходников** (любой дистрибутив; названия пакетов — как в Debian):
+
 ```sh
 sudo apt install build-essential libx11-dev libxext-dev libxfixes-dev libxrandr-dev libxtst-dev \
     libavcodec-dev libavutil-dev libswscale-dev libusbmuxd-dev libssl-dev libxkbcommon-dev usbmuxd
-make -C host
+make                        # дальше запуск отсюда (scripts/...) или: sudo make install (в /usr/local)
 sudo scripts/install.sh     # права на свободный разъём, порт 27183 в ufw
 scripts/autostart on        # запуск вместе с сеансом (выключить: scripts/autostart off)
 ```
+
+`make deb` собирает пакет для вашего выпуска. Ниже команды даны для папки с исходниками
+(`scripts/connector`); из пакета это `connector`, `connector-display`, `connector-autostart`,
+`connector-ipad-install`, `connector-setup`.
 
 Свободный разъём определяется при первом запуске и сохраняется в `~/.config/connector/config`
 (`CONNECTOR_OUTPUT` — имя в xrandr, `CONNECTOR_DRM` — имя в ядре, как в `/sys/class/drm/card*-ИМЯ`).
@@ -54,16 +87,23 @@ scripts/autostart on        # запуск вместе с сеансом (вы�
 
 ### 2. Приложение для iPad
 
-Собирается на Linux (clang + iOS SDK), подписывается и устанавливается через `plumesign`
-из [Impactor](https://github.com/claration/Impactor).
+Подписывается вашим Apple ID и ставится по кабелю через `plumesign` из
+[Impactor](https://github.com/claration/Impactor). Готовый `Connector.ipa` есть в пакете и в [Releases](../../releases):
+
+```sh
+plumesign account login -u ВАШ_APPLE_ID   # один раз; ввести код 2FA
+connector-ipad-install                    # iPad подключён кабелем и разблокирован
+# из папки с исходниками: IPA=~/Загрузки/Connector.ipa scripts/ipad-install
+```
+
+Собрать приложение самому — нужны clang, lld и iOS SDK (`make ipa`):
 
 ```sh
 sudo apt install clang lld
-# iOS SDK, например iPhoneOS12.4.sdk из https://github.com/theos/sdks, — в .deps/
-mkdir -p .deps && cp -r /путь/к/iPhoneOS12.4.sdk .deps/
-
-plumesign account login -u ВАШ_APPLE_ID   # один раз; ввести код 2FA
-scripts/ipad-install                      # iPad подключён кабелем и разблокирован
+git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks /tmp/sdks
+git -C /tmp/sdks sparse-checkout set iPhoneOS12.4.sdk
+mkdir -p .deps && mv /tmp/sdks/iPhoneOS12.4.sdk .deps/
+scripts/ipad-install                      # соберёт, подпишет и установит
 ```
 
 - На iPad один раз доверьте разработчику: Настройки → Основные → Управление устройством.
@@ -71,8 +111,8 @@ scripts/ipad-install                      # iPad подключён кабеле
   код в Настройки → [имя] → Пароль и безопасность → Получить код проверки.
 - В Impactor 2.7.0 вход падает с `Plist error: Serde(... <html> ...)`; нужна версия с исправлением
   из claration/Impactor#288. `plumesign` должен быть в PATH, или задайте `PLUMESIGN=/путь/к/plumesign`.
-- Каждому Apple ID нужен свой bundle id. По умолчанию `io.github.connector.<имя пользователя>`;
-  чтобы сохранить уже установленный, запишите его в `~/.config/connector/bundle-id`.
+- Каждому Apple ID нужен свой bundle id: уникальный создаётся при первой установке и хранится
+  в `~/.config/connector/bundle-id`, поэтому следующие установки обновляют то же приложение.
 - **Бесплатная подпись живёт 7 дней.** До истечения снова запустите `scripts/ipad-install`;
   iPad и компьютер напомнят об этом за день.
 
@@ -140,8 +180,10 @@ Win (они «залипают» до следующей клавиши), стр
 Трафик шифруется TLS 1.2 с общим ключом (PSK-AES128-GCM-SHA256); без ключа подключиться нельзя.
 Отвязать все iPad: удалить `~/.config/connector/key`, перезапустить службу и снова подключить кабелем.
 
-Битрейт: по кабелю до 80 Мбит/с, по Wi-Fi до 30, через интернет до 10 (`--lan-bitrate`, `--internet-bitrate`).
-Если сеть не успевает, хост пропускает кадры, а не копит очередь, — задержка не растёт. Только кабель: `--no-network`.
+Битрейт: по кабелю до 80 Мбит/с, по Wi-Fi до 30, через интернет до 10 (`--lan-bitrate`, `--internet-bitrate`;
+драйверы VA-API, умеющие только постоянное качество, его не соблюдают). Если сеть не успевает, хост пропускает
+кадры, а не копит очередь, — задержка не растёт. Только кабель: `--no-network`; только сеть: `--no-usb`;
+другой порт: `--listen-port`.
 
 ## Если не работает
 

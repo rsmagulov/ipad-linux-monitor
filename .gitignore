@@ -6,3 +6,4 @@ ios/build/
 ios/Connector.ipa
 # local tool state
 .remember/
+*.deb

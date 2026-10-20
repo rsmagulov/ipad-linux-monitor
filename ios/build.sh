@@ -17,9 +17,8 @@ mkdir -p "$APP"
     -O2 -fobjc-arc -Wall -Wno-unused-function \
     -framework UIKit -framework Foundation -framework AVFoundation -framework CoreMedia -framework CoreGraphics -framework QuartzCore -framework Network -framework Security -framework UserNotifications \
     -o "$APP/Connector" main.m
-# Each Apple ID needs its own bundle id; keep the one you installed with.
-BUNDLE_ID=${BUNDLE_ID:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/connector/bundle-id" 2>/dev/null)}
-BUNDLE_ID=${BUNDLE_ID:-io.github.connector.$(id -un | tr -cd 'a-zA-Z0-9')}
+# A neutral id; scripts/ipad-install gives each Apple ID its own when signing.
+BUNDLE_ID=${BUNDLE_ID:-io.github.connector}
 sed "s/BUNDLE_ID/$BUNDLE_ID/" Info.plist > "$APP/Info.plist"
 cp -R en.lproj ru.lproj "$APP/"
 printf 'APPL????' > "$APP/PkgInfo"

@@ -8,7 +8,7 @@
 "“%@” is not on this Wi-Fi nor at %@. Retrying…" = "«%@» не найден ни в этой сети Wi-Fi, ни по адресу %@. Повтор…";
 "“%@” is not on this Wi-Fi. Retrying…" = "«%@» не найден в этой сети Wi-Fi. Повтор…";
 "Connector needs re-signing" = "Connector: продлите подпись";
-"The app stops opening on %@. Plug the iPad into the computer and run scripts/ipad-install." = "Приложение перестанет открываться %@. Подключите iPad к компьютеру кабелем и запустите scripts/ipad-install.";
+"The app stops opening on %@. Plug the iPad into the computer and run ipad-install from Connector." = "Приложение перестанет открываться %@. Подключите iPad к компьютеру кабелем и запустите ipad-install из Connector.";
 "Settings" = "Настройки";
 "iPad screen" = "Экран iPad";
 "Second monitor" = "Второй монитор";
