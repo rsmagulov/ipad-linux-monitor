@@ -9,3 +9,5 @@ ios/Connector.ipa
 *.deb
 # raw recordings
 video/
+# bug reports (scripts/report): contain details of your system
+reports/

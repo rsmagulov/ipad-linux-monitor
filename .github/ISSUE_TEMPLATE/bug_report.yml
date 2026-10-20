@@ -6,11 +6,11 @@ body:
     attributes:
       value: |
         Thanks for reporting! Run **`connector-report`** (or `scripts/report` from a source checkout) on the computer:
-        it writes `~/connector-report.txt` with your system, a self-check and the log, with device ids and
+        it writes a report (to `~/connector-reports/`, or `reports/` in a source checkout) with your system, a self-check and the log, with device ids and
         public addresses removed. Please read it through before pasting — issues are public.
 
         Спасибо! Запустите на компьютере **`connector-report`** (из папки с исходниками — `scripts/report`):
-        он создаст `~/connector-report.txt` с данными системы, самопроверкой и журналом, без идентификаторов
+        он сохранит отчёт (в `~/connector-reports/` или `reports/` в папке с исходниками) с данными системы, самопроверкой и журналом, без идентификаторов
         устройств и внешних адресов. Просмотрите его перед вставкой — issues видны всем.
   - type: textarea
     id: what
@@ -41,7 +41,7 @@ body:
     id: report
     attributes:
       label: connector-report
-      description: Paste the contents of ~/connector-report.txt. Вставьте содержимое ~/connector-report.txt.
+      description: Paste the report file's contents. Вставьте содержимое файла отчёта.
     validations:
       required: true
   - type: textarea

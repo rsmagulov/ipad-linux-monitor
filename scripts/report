@@ -1,11 +1,17 @@
 #!/bin/sh
 # Collects what's needed to look into a problem into one file, with device ids,
-# public IP addresses, your user name and home path taken out. Read it, then attach it to
+# public IP addresses, your user and computer names and home path taken out. Read it, then attach it to
 # an issue: https://github.com/rsmagulov/ipad-linux-monitor/issues/new/choose
-#   report [FILE]   default ~/connector-report.txt
+#   report [FILE]   default: reports/ in a source checkout, ~/connector-reports/ when installed
 DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 . "$DIR/scripts/connector-config" 2> /dev/null
-OUT=${1:-$HOME/connector-report.txt}
+if [ -f "$DIR/ios/main.m" ] && [ -w "$DIR" ]; then
+    REPORTS=$DIR/reports
+else
+    REPORTS=$HOME/connector-reports
+fi
+mkdir -p "$REPORTS"
+OUT=${1:-$REPORTS/connector-report-$(date +%Y%m%d-%H%M%S).txt}
 LOG=${XDG_CACHE_HOME:-$HOME/.cache}/connector.log
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/connector
 ADDRESS=$(cat "$CONF/address" 2> /dev/null)
@@ -13,9 +19,9 @@ ADDRESS=$(cat "$CONF/address" 2> /dev/null)
 section() { printf '\n## %s\n\n```\n' "$1"; }
 end() { printf '```\n'; }
 
-# UDIDs, public IPv4 addresses, the internet address, the home directory
+# UDIDs, public IPv4 addresses, the internet address, the home directory, names
 redact() {
-    awk -v home="$HOME" -v user="$(id -un)" -v addr="${ADDRESS%:*}" '
+    awk -v home="$HOME" -v user="$(id -un)" -v host="$(hostname)" -v addr="${ADDRESS%:*}" '
     function private(ip,   o) {
         split(ip, o, ".")
         return o[1] == 10 || o[1] == 127 || (o[1] == 172 && o[2] >= 16 && o[2] <= 31) ||
@@ -34,6 +40,7 @@ redact() {
         if (addr != "") gsub(addr, "<internet-address>", line)
         if (home != "") gsub(home, "~", line)
         if (user != "") gsub("(^|[^A-Za-z0-9_])" user "([^A-Za-z0-9_]|$)", " <user> ", line)
+        if (host != "") gsub(host, "<hostname>", line)
         print line
     }'
 }

@@ -229,9 +229,10 @@ USB only: `--no-network`; network only: `--no-usb`; another port: `--listen-port
 
 ## Reporting a problem
 
-1. Run `connector-report` (from a source checkout: `scripts/report`). It writes `~/connector-report.txt`:
+1. Run `connector-report` (from a source checkout: `scripts/report`). It writes a report to
+   `~/connector-reports/` (in a source checkout: `reports/`):
    your system and GPU, a self-check (`connector-host --check`: X11, encoders, USB, port) and the log,
-   which includes the iPad app's own log. Device ids, public IP addresses, your user name and home path
+   which includes the iPad app's own log. Device ids, public IP addresses, your user and computer names and home path
    are taken out; read it through anyway.
 2. If the iPad doesn't connect at all, its log stays on the iPad: three-finger tap → App log → Copy.
 3. [Open an issue](../../issues/new/choose) and paste both.
