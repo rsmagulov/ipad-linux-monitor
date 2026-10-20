@@ -11,3 +11,6 @@ ios/Connector.ipa
 video/
 # bug reports (scripts/report): contain details of your system
 reports/
+# photos dropped into the folder (may show serial numbers)
+IMG_*
+*.jpg

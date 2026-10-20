@@ -4,7 +4,7 @@
 
 [Русская версия](README.ru.md)
 
-![A window dragged from a Linux laptop onto an iPad mini 3 and maximized there](docs/demo.gif)
+![A window dragged from a Linux laptop onto an iPad mini 2 and maximized there](docs/demo.gif)
 
 Something like Duet Display or spacedesk, for Linux (X11) and iPads that can't run modern apps:
 the app targets **iOS 12**, so an iPad mini 2/3, iPad Air or newer works. The iPad is a real
@@ -33,7 +33,7 @@ display settings.
 ## Status
 
 Works daily on one setup: Linux Mint 22 (Cinnamon, X11), a laptop with Intel + NVIDIA graphics,
-iPad mini 3 on iOS 12.5.8. Other setups should work if they meet the requirements below,
+iPad mini 2 on iOS 12.5.8. Other setups should work if they meet the requirements below,
 but haven't been tried. Reports and pull requests are welcome.
 
 ## Compatibility
@@ -50,7 +50,7 @@ but haven't been tried. Reports and pull requests are welcome.
 Encoding uses NVENC on NVIDIA, VA-API on Intel/AMD, or x264 on the CPU, whichever works first.
 
 **iPad:** any 64-bit iPad with iOS 12 or later; one build of the app runs on all of them.
-Tested on an iPad mini 3 (iOS 12.5.8); the rest is expected from how iOS runs the app:
+Tested on an iPad mini 2 (iOS 12.5.8); the rest is expected from how iOS runs the app:
 
 | iPads | Expected |
 |---|---|

@@ -23,7 +23,7 @@ body:
     id: ipad
     attributes:
       label: iPad model and iOS version / Модель iPad и версия iOS
-      placeholder: iPad mini 3, iOS 12.5.8
+      placeholder: iPad mini 2, iOS 12.5.8
     validations:
       required: true
   - type: dropdown
