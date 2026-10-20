@@ -4,6 +4,8 @@
 
 [Русская версия](README.ru.md)
 
+![A window dragged from a Linux laptop onto an iPad mini 3 and maximized there](docs/demo.gif)
+
 Something like Duet Display or spacedesk, for Linux (X11) and iPads that can't run modern apps:
 the app targets **iOS 12**, so an iPad mini 2/3, iPad Air or newer works. The iPad is a real
 monitor to the desktop: you drag windows onto it, maximize them there, and arrange it in the

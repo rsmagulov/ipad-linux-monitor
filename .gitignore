@@ -7,3 +7,5 @@ ios/Connector.ipa
 # local tool state
 .remember/
 *.deb
+# raw recordings
+video/
