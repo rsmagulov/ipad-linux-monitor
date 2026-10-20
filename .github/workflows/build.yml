@@ -22,7 +22,7 @@ jobs:
             libxkbcommon-dev clang lld shellcheck
 
       - name: Check scripts
-        run: shellcheck -S warning scripts/connector scripts/connector-display scripts/connector-service scripts/autostart scripts/ipad-install scripts/install.sh packaging/build-deb.sh ios/build.sh
+        run: shellcheck -S warning scripts/connector scripts/connector-display scripts/connector-service scripts/autostart scripts/ipad-install scripts/install.sh scripts/report packaging/build-deb.sh ios/build.sh
 
       - name: iOS SDK
         run: |

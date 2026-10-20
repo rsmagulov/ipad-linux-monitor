@@ -5,7 +5,7 @@
 PREFIX ?= /usr/local
 LIBDIR = $(PREFIX)/lib/connector
 BINDIR = $(PREFIX)/bin
-SCRIPTS = connector connector-display connector-service autostart ipad-install install.sh
+SCRIPTS = connector connector-display connector-service autostart ipad-install install.sh report
 
 all:
 	$(MAKE) -C host
@@ -24,11 +24,12 @@ install: all
 	ln -sf ../lib/connector/scripts/autostart $(DESTDIR)$(BINDIR)/connector-autostart
 	ln -sf ../lib/connector/scripts/ipad-install $(DESTDIR)$(BINDIR)/connector-ipad-install
 	ln -sf ../lib/connector/scripts/install.sh $(DESTDIR)$(BINDIR)/connector-setup
+	ln -sf ../lib/connector/scripts/report $(DESTDIR)$(BINDIR)/connector-report
 
 uninstall:
 	rm -rf $(DESTDIR)$(LIBDIR)
 	rm -f $(addprefix $(DESTDIR)$(BINDIR)/,connector connector-display connector-autostart \
-		connector-ipad-install connector-setup)
+		connector-ipad-install connector-setup connector-report)
 
 deb:
 	packaging/build-deb.sh

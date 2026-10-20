@@ -1,0 +1,55 @@
+name: Bug report / Сообщить об ошибке
+description: Something doesn't work. Что-то не работает.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Run **`connector-report`** (or `scripts/report` from a source checkout) on the computer:
+        it writes `~/connector-report.txt` with your system, a self-check and the log, with device ids and
+        public addresses removed. Please read it through before pasting — issues are public.
+
+        Спасибо! Запустите на компьютере **`connector-report`** (из папки с исходниками — `scripts/report`):
+        он создаст `~/connector-report.txt` с данными системы, самопроверкой и журналом, без идентификаторов
+        устройств и внешних адресов. Просмотрите его перед вставкой — issues видны всем.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / Что случилось
+      description: What you did, what you expected, what you got instead. Что делали, что ожидали, что получилось.
+    validations:
+      required: true
+  - type: input
+    id: ipad
+    attributes:
+      label: iPad model and iOS version / Модель iPad и версия iOS
+      placeholder: iPad mini 3, iOS 12.5.8
+    validations:
+      required: true
+  - type: dropdown
+    id: link
+    attributes:
+      label: Connection / Подключение
+      options:
+        - Cable / Кабель
+        - Wi-Fi
+        - Internet / Интернет
+        - Doesn't connect at all / Не подключается вообще
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: connector-report
+      description: Paste the contents of ~/connector-report.txt. Вставьте содержимое ~/connector-report.txt.
+    validations:
+      required: true
+  - type: textarea
+    id: applog
+    attributes:
+      label: iPad app log / Журнал приложения (optional)
+      description: |
+        If the iPad doesn't connect: on the iPad, tap with three fingers → App log → Copy, and paste here.
+        (When it connects, this log is already in connector-report.)
+        Если iPad не подключается: касание тремя пальцами → Журнал приложения → Скопировать.
+      render: text

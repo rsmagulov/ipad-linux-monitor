@@ -1,0 +1,79 @@
+#!/bin/sh
+# Collects what's needed to look into a problem into one file, with device ids,
+# public IP addresses, your user name and home path taken out. Read it, then attach it to
+# an issue: https://github.com/rsmagulov/ipad-linux-monitor/issues/new/choose
+#   report [FILE]   default ~/connector-report.txt
+DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+. "$DIR/scripts/connector-config" 2> /dev/null
+OUT=${1:-$HOME/connector-report.txt}
+LOG=${XDG_CACHE_HOME:-$HOME/.cache}/connector.log
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/connector
+ADDRESS=$(cat "$CONF/address" 2> /dev/null)
+
+section() { printf '\n## %s\n\n```\n' "$1"; }
+end() { printf '```\n'; }
+
+# UDIDs, public IPv4 addresses, the internet address, the home directory
+redact() {
+    awk -v home="$HOME" -v user="$(id -un)" -v addr="${ADDRESS%:*}" '
+    function private(ip,   o) {
+        split(ip, o, ".")
+        return o[1] == 10 || o[1] == 127 || (o[1] == 172 && o[2] >= 16 && o[2] <= 31) ||
+               (o[1] == 192 && o[2] == 168) || (o[1] == 169 && o[2] == 254) || o[1] == 0
+    }
+    {
+        line = $0; out = ""
+        while (match(line, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) {
+            ip = substr(line, RSTART, RLENGTH)
+            out = out substr(line, 1, RSTART - 1) (private(ip) ? ip : "<public-ip>")
+            line = substr(line, RSTART + RLENGTH)
+        }
+        line = out line
+        gsub(/[0-9a-fA-F]{40}/, "<udid>", line)
+        gsub(/[0-9A-F]{8}-[0-9A-F]{16}/, "<udid>", line)
+        if (addr != "") gsub(addr, "<internet-address>", line)
+        if (home != "") gsub(home, "~", line)
+        if (user != "") gsub("(^|[^A-Za-z0-9_])" user "([^A-Za-z0-9_]|$)", " <user> ", line)
+        print line
+    }'
+}
+
+{
+    echo "# Connector report"
+    section "System"
+    (. /etc/os-release && echo "$PRETTY_NAME")
+    uname -srm
+    echo "session: ${XDG_SESSION_TYPE:-?}, desktop: ${XDG_CURRENT_DESKTOP:-?}"
+    lspci -k 2> /dev/null | grep -A3 -E "VGA|3D controller|Display controller" | grep -vE "Subsystem|modules:"
+    end
+
+    section "connector-host --check"
+    "$DIR/host/connector-host" --check ${CONNECTOR_OUTPUT:+-o "$CONNECTOR_OUTPUT"} 2>&1
+    end
+
+    section "Setup"
+    echo "config: CONNECTOR_OUTPUT=${CONNECTOR_OUTPUT:-?} CONNECTOR_DRM=${CONNECTOR_DRM:-?}"
+    [ -n "$ADDRESS" ] && echo "internet address: set" || echo "internet address: not set"
+    for st in /sys/class/drm/card*-*/status; do
+        d=${st%/status}
+        card=${d##*/}
+        card=${card%%-*}
+        edid=no
+        [ -s "$d/edid" ] && edid=yes
+        echo "${d##*/}: $(cat "$st"), $(stat -c '%A %G' "$st"), driver $(basename "$(readlink -f "/sys/class/drm/$card/device/driver")"), monitor EDID $edid"
+    done
+    echo "groups: $(id -nG)"
+    autostart=no
+    [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/connector.desktop" ] && autostart=yes
+    echo "autostart: $autostart"
+    if pgrep -f connector-service > /dev/null; then echo "service: running"; else echo "service: not running"; fi
+    command -v ufw > /dev/null && echo "ufw: installed (run 'sudo ufw status' to check port 27183)"
+    end
+
+    section "Log (last 300 lines of $LOG)"
+    if [ -f "$LOG" ]; then tail -n 300 "$LOG"; else echo "no log yet"; fi
+    end
+} 2>&1 | redact > "$OUT"
+
+echo "Report written to $OUT"
+echo "Read it through, then attach it to an issue: https://github.com/rsmagulov/ipad-linux-monitor/issues/new/choose"

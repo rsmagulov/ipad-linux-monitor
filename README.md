@@ -109,7 +109,7 @@ scripts/autostart on        # start with the desktop session (off: scripts/autos
 
 `make deb` builds the package for the release you're on. Commands below are given as in a
 source checkout (`scripts/connector`); with the package they are `connector`, `connector-display`,
-`connector-autostart`, `connector-ipad-install`, `connector-setup`.
+`connector-autostart`, `connector-ipad-install`, `connector-setup`, `connector-report`.
 
 The spare port is detected on the first run and saved in `~/.config/connector/config`
 (`CONNECTOR_OUTPUT` is the xrandr name, `CONNECTOR_DRM` the kernel one, as in `/sys/class/drm/card*-NAME`).
@@ -225,6 +225,16 @@ USB only: `--no-network`; network only: `--no-usb`; another port: `--listen-port
 - **The iPad doesn't find the computer over Wi-Fi:** check the firewall (`sudo ufw status`, port 27183 tcp+udp)
   and that both are on the same network.
 - **The app doesn't open:** its signature expired. Run `scripts/ipad-install`.
+- **Anything else:** `connector-host --check` shows what works on this machine; see below for reporting.
+
+## Reporting a problem
+
+1. Run `connector-report` (from a source checkout: `scripts/report`). It writes `~/connector-report.txt`:
+   your system and GPU, a self-check (`connector-host --check`: X11, encoders, USB, port) and the log,
+   which includes the iPad app's own log. Device ids, public IP addresses, your user name and home path
+   are taken out; read it through anyway.
+2. If the iPad doesn't connect at all, its log stays on the iPad: three-finger tap → App log → Copy.
+3. [Open an issue](../../issues/new/choose) and paste both.
 
 ## Layout
 
@@ -239,6 +249,7 @@ USB only: `--no-network`; network only: `--no-usb`; another port: `--listen-port
 | `scripts/connector` | the host in a terminal |
 | `scripts/connector-service`, `scripts/autostart` | the background service and its autostart |
 | `scripts/ipad-install` | builds, signs and installs the app |
+| `scripts/report` | collects a bug report |
 | `scripts/install.sh` | one-time setup (sudo) |
 | `Makefile`, `packaging/` | `make install`, `make deb` |
 

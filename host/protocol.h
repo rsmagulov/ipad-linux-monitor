@@ -46,7 +46,9 @@ enum {
     MSG_KEY = 22,        /* u32 X keysym, u8 modifiers (MOD_*): press and release */
     MSG_TEXT = 23,       /* UTF-8 text to type */
     MSG_MOUSE_REL = 24,  /* i16 dx, i16 dy in host pixels (trackpad mode) */
-    MSG_APP_INFO = 25,   /* u32 unix time when the app's signature expires, 0 if unknown */
+    MSG_APP_INFO = 25,   /* u32 unix time when the app's signature expires, 0 if unknown;
+                            then optional UTF-8 "app=1.4 ios=12.5.8 model=iPad4,8" */
+    MSG_LOG = 26,        /* UTF-8 lines from the app's own log, for the host's log */
 };
 
 enum { MOD_SHIFT = 1, MOD_CTRL = 2, MOD_ALT = 4, MOD_SUPER = 8 };

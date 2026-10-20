@@ -31,6 +31,7 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/utsname.h>
 #include <stdatomic.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -40,6 +41,134 @@
 #define L(s) NSLocalizedString(s, nil)
 
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+
+#pragma mark - Log
+
+/* The app's own log, for bug reports: kept in Caches/connector.log, shown in
+ * the settings, and sent to the computer's log (MSG_LOG) while connected.
+ * Lines are in English; a line repeating the previous one only bumps a count. */
+@interface AppLog : NSObject
++ (instancetype)shared;
+- (void)log:(NSString *)format, ... NS_FORMAT_FUNCTION(1, 2);
+@property(atomic, copy) void (^sink)(NSString *lines); /* set while connected */
+- (void)flushToSink;       /* sends what the computer hasn't seen yet */
+- (NSString *)text;
+@end
+
+@implementation AppLog {
+    dispatch_queue_t _q;
+    NSMutableArray<NSString *> *_lines;
+    NSMutableArray<NSString *> *_unsent;
+    NSString *_last;
+    int _repeats;
+    NSString *_path;
+}
+
++ (instancetype)shared
+{
+    static AppLog *log;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ log = [[AppLog alloc] init]; });
+    return log;
+}
+
+- (instancetype)init
+{
+    if ((self = [super init])) {
+        _q = dispatch_queue_create("connector.log", DISPATCH_QUEUE_SERIAL);
+        _unsent = [NSMutableArray array];
+        NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+        _path = [caches stringByAppendingPathComponent:@"connector.log"];
+        /* earlier runs: shown in the settings, not sent again */
+        NSString *old = [NSString stringWithContentsOfFile:_path encoding:NSUTF8StringEncoding error:NULL];
+        _lines = [[old componentsSeparatedByString:@"\n"] mutableCopy] ?: [NSMutableArray array];
+        [_lines removeObject:@""];
+        [self trim];
+    }
+    return self;
+}
+
+- (void)trim
+{
+    if (_lines.count > 400)
+        [_lines removeObjectsInRange:NSMakeRange(0, _lines.count - 300)];
+    if (_unsent.count > 300)
+        [_unsent removeObjectsInRange:NSMakeRange(0, _unsent.count - 300)];
+}
+
+- (void)append:(NSString *)line
+{
+    static NSDateFormatter *f;
+    if (!f) {
+        f = [[NSDateFormatter alloc] init];
+        f.dateFormat = @"MM-dd HH:mm:ss";
+    }
+    line = [NSString stringWithFormat:@"%@ %@", [f stringFromDate:[NSDate date]], line];
+    [_lines addObject:line];
+    [_unsent addObject:line];
+    [self trim];
+    NSString *all = [[_lines componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"];
+    [all writeToFile:_path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+}
+
+- (void)log:(NSString *)format, ...
+{
+    va_list ap;
+    va_start(ap, format);
+    NSString *msg = [[NSString alloc] initWithFormat:format arguments:ap];
+    va_end(ap);
+    NSLog(@"%@", msg);
+    dispatch_async(_q, ^{
+        if ([msg isEqualToString:self->_last]) {
+            self->_repeats++;
+            return;
+        }
+        if (self->_repeats)
+            [self append:[NSString stringWithFormat:@"(the line above repeated %d more times)", self->_repeats]];
+        self->_repeats = 0;
+        self->_last = msg;
+        [self append:msg];
+        [self sendUnsent];
+    });
+}
+
+- (void)sendUnsent
+{
+    void (^sink)(NSString *) = self.sink;
+    if (!sink || !_unsent.count)
+        return;
+    sink([_unsent componentsJoinedByString:@"\n"]);
+    [_unsent removeAllObjects];
+}
+
+- (void)flushToSink
+{
+    dispatch_async(_q, ^{ [self sendUnsent]; });
+}
+
+- (NSString *)text
+{
+    __block NSString *t;
+    dispatch_sync(_q, ^{ t = [self->_lines componentsJoinedByString:@"\n"]; });
+    return t;
+}
+@end
+
+#define APPLOG(...) [AppLog.shared log:__VA_ARGS__]
+
+static NSString *deviceModel(void)
+{
+    struct utsname u;
+    uname(&u);
+    return @(u.machine);
+}
+
+static NSString *appDescription(void)
+{
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    return [NSString stringWithFormat:@"app=%@ (%@) ios=%@ model=%@", info[@"CFBundleShortVersionString"],
+                                      info[@"CFBundleVersion"], UIDevice.currentDevice.systemVersion, deviceModel()];
+}
 
 #pragma mark - Video view
 
@@ -145,7 +274,7 @@ static void forEachNAL(const uint8_t *d, size_t len, void (^block)(const uint8_t
         CMVideoFormatDescriptionRef fmt = NULL;
         OSStatus st = CMVideoFormatDescriptionCreateFromH264ParameterSets(NULL, 2, sets, sizes, 4, &fmt);
         if (st != noErr) {
-            NSLog(@"bad SPS/PPS: %d", (int)st);
+            APPLOG(@"decoder: bad SPS/PPS (%d)", (int)st);
             free(mem);
             return NO;
         }
@@ -169,7 +298,7 @@ static void forEachNAL(const uint8_t *d, size_t len, void (^block)(const uint8_t
     }
 
     if (_layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
-        NSLog(@"display layer failed: %@", _layer.error);
+        APPLOG(@"decoder: display layer failed: %@", _layer.error.localizedDescription);
         [self reset];
         free(mem);
         return NO;
@@ -177,6 +306,7 @@ static void forEachNAL(const uint8_t *d, size_t len, void (^block)(const uint8_t
     /* The decoder fell behind: drop the backlog instead of letting the layer's
      * queue grow, and restart from the next keyframe. */
     if (!_layer.readyForMoreMediaData) {
+        APPLOG(@"decoder: fell behind, dropping frames until the next keyframe");
         [self reset];
         free(mem);
         return NO;
@@ -298,6 +428,8 @@ typedef NS_ENUM(int, LinkKind) { LinkNone, LinkUSB, LinkLAN, LinkInternet };
 @end
 
 @implementation Connection {
+    NSMutableArray<NSString *> *_attempts; /* this round of the network loop, for the log */
+    NSString *_lastFailure;
     int _listenFd;
     int _usbFd;
     nw_connection_t _net;
@@ -344,7 +476,7 @@ typedef NS_ENUM(int, LinkKind) { LinkNone, LinkUSB, LinkLAN, LinkInternet };
     addr.sin_port = htons(CONNECTOR_PORT);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, 1) < 0) {
-        NSLog(@"listen failed: %s", strerror(errno));
+        APPLOG(@"usb: listen on port %d failed: %s", CONNECTOR_PORT, strerror(errno));
         close(fd);
         return -1;
     }
@@ -380,8 +512,10 @@ typedef NS_ENUM(int, LinkKind) { LinkNone, LinkUSB, LinkLAN, LinkInternet };
                 self->_usbFd = fd;
                 self.link = LinkUSB;
             });
+            APPLOG(@"usb: the computer connected");
             [self.delegate connectionDidOpen:LinkUSB];
             [self readLoop:fd];
+            APPLOG(@"usb: connection closed");
             dispatch_sync(_writeQueue, ^{
                 self->_usbFd = -1;
                 self.link = LinkNone;
@@ -464,6 +598,7 @@ static BOOL readFully(int fd, uint8_t *buf, size_t len)
         [d setObject:address forKey:kPairAddressKey];
     else
         [d removeObjectForKey:kPairAddressKey];
+    APPLOG(@"paired with “%@” (port %u, internet address %@)", name, port, address.length ? @"set" : @"none");
     [self.delegate connectionDidPair];
 }
 
@@ -486,11 +621,14 @@ static BOOL readFully(int fd, uint8_t *buf, size_t len)
             BOOL connected = NO;
 
             [self setStatus:[NSString stringWithFormat:L(@"Looking for “%@” on this Wi-Fi…"), name]];
+            _attempts = [NSMutableArray array];
             if ([self discover:hostId(key) host:&host port:&port]) {
+                [_attempts addObject:[NSString stringWithFormat:@"wifi: found the computer at %@:%u", host, port]];
                 [d setObject:host forKey:kLastLANKey];
                 [self setStatus:[NSString stringWithFormat:L(@"Connecting to “%@” over Wi-Fi (%@)…"), name, host]];
                 connected = [self runSessionTo:host port:port kind:LinkLAN key:key timeout:6];
             } else if ((host = [d stringForKey:kLastLANKey])) {
+                [_attempts addObject:@"wifi: no answer to the discovery broadcast, trying the last address"];
                 /* Broadcasts may be filtered; the last known address may still work. */
                 connected = [self runSessionTo:host port:port kind:LinkLAN key:key timeout:2];
             }
@@ -507,6 +645,16 @@ static BOOL readFully(int fd, uint8_t *buf, size_t len)
             }
 
             if (!connected && self.link == LinkNone) {
+                if (!host && !address.length)
+                    [_attempts addObject:@"wifi: no answer to the discovery broadcast, no internet address set"];
+                /* every few seconds: log only when something changed */
+                NSString *summary = [_attempts componentsJoinedByString:@"\n"];
+                if (![summary isEqualToString:_lastFailure]) {
+                    for (NSString *line in _attempts)
+                        APPLOG(@"%@", line);
+                    APPLOG(@"network: not connected, retrying every few seconds");
+                }
+                _lastFailure = summary;
                 [self setStatus:address.length
                     ? [NSString stringWithFormat:L(@"“%@” is not on this Wi-Fi nor at %@. Retrying…"), name, address]
                     : [NSString stringWithFormat:L(@"“%@” is not on this Wi-Fi. Retrying…"), name]];
@@ -602,10 +750,17 @@ static BOOL isIPAddress(NSString *s)
         nw_tcp_options_set_connection_timeout(tcp, timeout);
     });
     nw_connection_t c = nw_connection_create(endpoint, params);
+    /* for the log: the internet address is the user's own business */
+    NSString *where = kind == LinkLAN ? [NSString stringWithFormat:@"wifi: %@:%u", host, port] : @"internet address";
 
     dispatch_semaphore_t settled = dispatch_semaphore_create(0), ended = dispatch_semaphore_create(0);
     __block BOOL ready = NO;
+    __block NSString *failure = @"timed out";
     nw_connection_set_state_changed_handler(c, ^(nw_connection_state_t state, nw_error_t error) {
+        if (error) {
+            NSError *e = (__bridge_transfer NSError *)nw_error_copy_cf_error(error);
+            failure = [NSString stringWithFormat:@"%@ (%@ %ld)", e.localizedDescription, e.domain, (long)e.code];
+        }
         if (state == nw_connection_state_ready) {
             ready = YES;
             dispatch_semaphore_signal(settled);
@@ -630,9 +785,14 @@ static BOOL isIPAddress(NSString *s)
     }
     if (!taken) {
         nw_connection_cancel(c);
+        [_attempts addObject:[NSString stringWithFormat:@"%@: failed: %@", where,
+                                                        ready ? @"the cable took over" : failure]];
         return NO;
     }
 
+    APPLOG(@"%@: connected", where);
+    failure = @"closed";
+    _lastFailure = nil;
     [self setStatus:@""];
     [self.delegate connectionDidOpen:kind];
     [self receiveOn:c ended:ended];
@@ -647,6 +807,8 @@ static BOOL isIPAddress(NSString *s)
         }
     });
     nw_connection_cancel(c);
+    APPLOG(@"%@: connection ended%@", where,
+           wasCurrent ? [NSString stringWithFormat:@": %@", failure] : @" (switched to the cable)");
     if (wasCurrent)
         [self.delegate connectionDidClose];
     return YES;
@@ -826,6 +988,7 @@ static void scheduleResignReminders(NSDate *expires)
 @property(nonatomic, copy) void (^onClose)(void);
 @property(nonatomic, copy) void (^onEditAddress)(void);
 @property(nonatomic, copy) void (^onKeyboard)(void);
+@property(nonatomic, copy) void (^onLog)(void);
 - (void)setNetworkLine:(NSString *)line address:(NSString *)address;
 - (void)fitInto:(CGSize)size;
 @end
@@ -900,6 +1063,9 @@ static void scheduleResignReminders(NSDate *expires)
         if (expires && expires.timeIntervalSinceNow < 2 * 24 * 3600)
             sig.textColor = [UIColor colorWithRed:1 green:0.6 blue:0.2 alpha:1];
         y = CGRectGetMaxY(sig.frame) + 10;
+
+        UIButton *log = [self button:L(@"App log (for bug reports)") y:y - 4 action:@selector(showLog)];
+        y = CGRectGetMaxY(log.frame) + 10;
 
         UILabel *hint = [self label:L(@"Three fingers: settings · four fingers: keyboard · two-finger hold: middle click")
                                   y:y size:14 bold:NO];
@@ -976,6 +1142,9 @@ static void scheduleResignReminders(NSDate *expires)
     [d setInteger:_orientation.selectedSegmentIndex forKey:kOrientationKey];
     [d setInteger:_trackpad.selectedSegmentIndex forKey:kTrackpadKey];
     [d setInteger:_indicator.selectedSegmentIndex forKey:kIndicatorKey];
+    APPLOG(@"settings: mirror %d, scale %d%%, quality %d, orientation %d, trackpad %d",
+           (int)_mirror.selectedSegmentIndex, kScales[_scale.selectedSegmentIndex], (int)_quality.selectedSegmentIndex,
+           (int)_orientation.selectedSegmentIndex, (int)_trackpad.selectedSegmentIndex);
     if (self.onChange)
         self.onChange();
 }
@@ -996,6 +1165,12 @@ static void scheduleResignReminders(NSDate *expires)
 {
     if (self.onKeyboard)
         self.onKeyboard();
+}
+
+- (void)showLog
+{
+    if (self.onLog)
+        self.onLog();
 }
 
 - (void)setNetworkLine:(NSString *)line address:(NSString *)address
@@ -1134,6 +1309,8 @@ static uint32_t keysymForInput(NSString *input, int *mods)
     UILabel *_status, *_indicator;
     SettingsPanel *_settings;
     KeyBar *_keyBar;
+    __weak UITextView *_logText;
+    __weak UIViewController *_logVC;
     NSArray<UIKeyCommand *> *_keyCommands;
     Connection *_conn;
     H264Feeder *_feeder;
@@ -1333,8 +1510,80 @@ static NSString *linkName(LinkKind k)
 - (void)sendAppInfo
 {
     uint32_t t = (uint32_t)signatureExpiry().timeIntervalSince1970;
-    uint8_t p[4] = {t >> 24, t >> 16, t >> 8, t};
-    [_conn send:MSG_APP_INFO payload:p length:sizeof(p)];
+    NSMutableData *p = [NSMutableData dataWithBytes:(uint8_t[4]){t >> 24, t >> 16, t >> 8, t} length:4];
+    [p appendData:[appDescription() dataUsingEncoding:NSUTF8StringEncoding]];
+    [_conn send:MSG_APP_INFO payload:p.bytes length:(uint32_t)p.length];
+}
+
+/* The app's log goes to the computer's log while connected. */
+- (void)connectLogSink:(BOOL)on
+{
+    __weak Connection *conn = _conn;
+    AppLog.shared.sink = on ? ^(NSString *lines) {
+        NSData *d = [lines dataUsingEncoding:NSUTF8StringEncoding];
+        [conn send:MSG_LOG payload:d.bytes length:(uint32_t)d.length];
+    } : nil;
+    if (on)
+        [AppLog.shared flushToSink];
+}
+
+- (void)showLog
+{
+    UIViewController *vc = [[UIViewController alloc] init];
+    vc.modalPresentationStyle = UIModalPresentationFormSheet;
+    vc.view.backgroundColor = [UIColor colorWithWhite:0.1 alpha:1];
+    UITextView *text = [[UITextView alloc] initWithFrame:CGRectInset(vc.view.bounds, 0, 0)];
+    text.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    text.editable = NO;
+    text.backgroundColor = UIColor.clearColor;
+    text.textColor = [UIColor colorWithWhite:0.85 alpha:1];
+    text.font = [UIFont fontWithName:@"Menlo" size:12];
+    text.text = [NSString stringWithFormat:@"%@\n\n%@", appDescription(), AppLog.shared.text];
+    text.contentInset = UIEdgeInsetsMake(56, 0, 0, 0);
+    [vc.view addSubview:text];
+
+    UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, vc.view.bounds.size.width, 52)];
+    bar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    bar.backgroundColor = [UIColor colorWithWhite:0.16 alpha:1];
+    [vc.view addSubview:bar];
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectInset(bar.bounds, 120, 0)];
+    title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    title.text = L(@"App log");
+    title.textColor = UIColor.whiteColor;
+    title.textAlignment = NSTextAlignmentCenter;
+    title.font = [UIFont boldSystemFontOfSize:17];
+    [bar addSubview:title];
+    __weak UIViewController *weakVC = vc;
+    __weak UITextView *weakText = text;
+    UIButton *copy = [UIButton buttonWithType:UIButtonTypeSystem];
+    [copy setTitle:L(@"Copy") forState:UIControlStateNormal];
+    copy.frame = CGRectMake(12, 8, 100, 36);
+    copy.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    [copy addTarget:self action:@selector(copyLog:) forControlEvents:UIControlEventTouchUpInside];
+    [bar addSubview:copy];
+    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+    [close setTitle:L(@"Close") forState:UIControlStateNormal];
+    close.frame = CGRectMake(bar.bounds.size.width - 112, 8, 100, 36);
+    close.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    close.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+    [close addTarget:self action:@selector(closeLog) forControlEvents:UIControlEventTouchUpInside];
+    [bar addSubview:close];
+    _logText = weakText;
+    _logVC = weakVC;
+    [self presentViewController:vc animated:YES completion:^{
+        [weakText scrollRangeToVisible:NSMakeRange(weakText.text.length, 0)];
+    }];
+}
+
+- (void)copyLog:(UIButton *)sender
+{
+    UIPasteboard.generalPasteboard.string = _logText.text;
+    [sender setTitle:L(@"Copied") forState:UIControlStateNormal];
+}
+
+- (void)closeLog
+{
+    [_logVC dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)toggleSettings
@@ -1355,6 +1604,7 @@ static NSString *linkName(LinkKind k)
     };
     _settings.onClose = ^{ [weakSelf toggleSettings]; };
     _settings.onEditAddress = ^{ [weakSelf editAddress]; };
+    _settings.onLog = ^{ [weakSelf showLog]; };
     _settings.onKeyboard = ^{
         [weakSelf toggleSettings];
         [weakSelf toggleKeyboard];
@@ -1478,6 +1728,7 @@ static NSString *linkName(LinkKind k)
         [self->_feeder reset];
         [self sendSettings];
         [self sendAppInfo];
+        [self connectLogSink:YES];
         [self showStatus:[NSString stringWithFormat:L(@"Connected %@, waiting for the picture…"), linkName(kind)]];
     });
 }
@@ -1486,6 +1737,7 @@ static NSString *linkName(LinkKind k)
 {
     dispatch_async(dispatch_get_main_queue(), ^{
         self->_link = LinkNone;
+        [self connectLogSink:NO];
         self.streaming = NO;
         [self->_feeder reset];
         [self showStatus:L(@"Connection lost")];
@@ -1793,11 +2045,28 @@ static NSString *linkName(LinkKind k)
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts
 {
+    NSDate *expires = signatureExpiry();
+    APPLOG(@"launched: %@, signature until %@", appDescription(), expires ?: @"unknown");
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.rootViewController = [[ViewController alloc] init];
     [self.window makeKeyAndVisible];
-    scheduleResignReminders(signatureExpiry());
+    scheduleResignReminders(expires);
     return YES;
+}
+
+- (void)applicationDidReceiveMemoryWarning:(UIApplication *)app
+{
+    APPLOG(@"memory warning");
+}
+
+- (void)applicationDidEnterBackground:(UIApplication *)app
+{
+    APPLOG(@"app went to the background");
+}
+
+- (void)applicationWillEnterForeground:(UIApplication *)app
+{
+    APPLOG(@"app back in the foreground");
 }
 @end
 

@@ -64,6 +64,10 @@
 
 #include "protocol.h"
 
+#ifndef CONNECTOR_VERSION
+#define CONNECTOR_VERSION "dev"
+#endif
+
 /* ---------------------------------------------------------------- options */
 
 static struct {
@@ -1326,8 +1330,21 @@ static void handle_message(X11 *x, Input *in, int type, const uint8_t *p, uint32
         break;
     case MSG_APP_INFO:
         if (len >= 4) {
+            if (len > 4)
+                logmsg("iPad app: %.*s", (int)(len - 4), p + 4);
             sig_store(rd32(p));
             sig_check();
+        }
+        break;
+    case MSG_LOG:
+        /* one host log line per app log line */
+        for (uint32_t i = 0; i < len;) {
+            uint32_t j = i;
+            while (j < len && p[j] != '\n')
+                j++;
+            if (j > i)
+                logmsg("iPad: %.*s", (int)(j - i), p + i);
+            i = j + 1;
         }
         break;
     case MSG_MOUSE_MOVE:
@@ -1384,6 +1401,83 @@ static int input_read(X11 *x, Input *in, Link *l)
     return 1;
 }
 
+/* ---------------------------------------------------------------- self check */
+
+/* What works on this machine, for bug reports: connector-host --check. */
+static int self_check(X11 *x)
+{
+    printf("connector-host %s\n", CONNECTOR_VERSION);
+    const char *session = getenv("XDG_SESSION_TYPE");
+    printf("session: %s%s\n", session ? session : "?",
+           session && strcmp(session, "x11") != 0 ? " (needs X11)" : "");
+    int a, b, c, d, ok = 1;
+    int shm = XShmQueryExtension(x->dpy), test = XTestQueryExtension(x->dpy, &a, &b, &c, &d),
+        randr = XRRQueryExtension(x->dpy, &a, &b), fixes = XFixesQueryExtension(x->dpy, &a, &b);
+    printf("X11 extensions: MIT-SHM %s, XTEST %s, RANDR %s, XFIXES %s\n", shm ? "ok" : "MISSING",
+           test ? "ok" : "MISSING", randr ? "ok" : "MISSING", fixes ? "ok" : "MISSING");
+    ok &= shm && test && randr && fixes;
+
+    printf("outputs:\n");
+    fflush(stdout);
+    list_outputs(x);
+    Rect r;
+    if (find_output(x, &r))
+        printf("virtual monitor %s: on, %dx%d+%d+%d\n", x->output, r.w, r.h, r.x, r.y);
+    else
+        printf("virtual monitor %s: off (normal while no iPad is connected)\n", x->output);
+
+    printf("encoders (1280x720 test):\n");
+    static const char *const names[] = {"h264_nvenc", "h264_vaapi", "libx264"};
+    int any = 0;
+    for (int i = 0; i < 3; i++) {
+        Encoder e = {.mbps = 10};
+        fflush(stdout);
+        int works = encoder_try(&e, names[i], 1280, 720);
+        encoder_close(&e);
+        printf("  %-11s %s\n", names[i], works ? "ok" : "not available");
+        any |= works;
+    }
+    ok &= any;
+
+    usbmuxd_device_info_t *list = NULL;
+    int n = usbmuxd_get_device_list(&list);
+    if (n < 0) {
+        printf("usbmuxd: not running (fine if no iPad is plugged in: it starts with one; "
+               "if one is, install usbmuxd)\n");
+    } else {
+        int usb = 0;
+        for (int i = 0; i < n; i++)
+            usb += list[i].conn_type == CONNECTION_TYPE_USB;
+        printf("usbmuxd: ok, %d iOS device(s) on USB\n", usb);
+        usbmuxd_device_list_free(&list);
+    }
+
+    int fd = net_socket(AF_INET6, SOCK_STREAM);
+    if (fd < 0)
+        fd = net_socket(AF_INET, SOCK_STREAM);
+    if (fd >= 0)
+        printf("port %d: free\n", opt.listen_port);
+    else
+        printf("port %d: %s%s\n", opt.listen_port, strerror(errno),
+               errno == EADDRINUSE ? " (the service is probably running: fine)" : "");
+    if (fd >= 0)
+        close(fd);
+
+    char path[4096];
+    config_path(path, sizeof(path), "key");
+    printf("pairing key: %s\n", access(path, R_OK) == 0 ? "present" : "none yet (pair by cable)");
+    sig_load();
+    if (sig.expires) {
+        char date[64];
+        strftime(date, sizeof(date), "%Y-%m-%d %H:%M", localtime(&sig.expires));
+        printf("iPad app signature: valid until %s%s\n", date, sig.expires < time(NULL) ? " (EXPIRED)" : "");
+    } else {
+        printf("iPad app signature: unknown\n");
+    }
+    printf("%s\n", ok ? "result: ok" : "result: PROBLEMS above");
+    return ok ? 0 : 1;
+}
+
 /* ---------------------------------------------------------------- main loop */
 
 static void usage(const char *argv0)
@@ -1408,7 +1502,9 @@ static void usage(const char *argv0)
             "  -m, --manage-display turn the virtual display on/off and pick its mode\n"
             "                       from the iPad's settings (used by the autostart service)\n"
             "  -l, --list           list xrandr outputs and exit\n"
-            "  -v, --verbose        print stats every 5 seconds\n",
+            "      --check          check what works here (X11, port, encoders, USB) and exit\n"
+            "  -v, --verbose        print stats every 5 seconds\n"
+            "  -V, --version        print the version and exit\n",
             argv0, opt.output, opt.fps, opt.bitrate_mbps, opt.quality, opt.port, opt.listen_port, opt.lan_mbps,
             opt.internet_mbps);
 }
@@ -1425,10 +1521,11 @@ int main(int argc, char **argv)
         {"address", required_argument, 0, 'a'}, {"listen-port", required_argument, 0, 'P'},
         {"lan-bitrate", required_argument, 0, 'L'},
         {"internet-bitrate", required_argument, 0, 'I'},
+        {"check", no_argument, 0, 'C'},         {"version", no_argument, 0, 'V'},
         {"help", no_argument, 0, 'h'},          {0, 0, 0, 0},
     };
-    int list_only = 0, c;
-    while ((c = getopt_long(argc, argv, "o:f:b:q:e:p:P:a:lmnUvh", longopts, NULL)) != -1) {
+    int list_only = 0, check_only = 0, c;
+    while ((c = getopt_long(argc, argv, "o:f:b:q:e:p:P:a:lmnUvVh", longopts, NULL)) != -1) {
         switch (c) {
         case 'o': opt.output = optarg; break;
         case 'f': opt.fps = atoi(optarg); break;
@@ -1445,6 +1542,8 @@ int main(int argc, char **argv)
         case 'P': opt.listen_port = atoi(optarg); break;
         case 'L': opt.lan_mbps = atoi(optarg); break;
         case 'I': opt.internet_mbps = atoi(optarg); break;
+        case 'C': check_only = 1; break;
+        case 'V': printf("connector-host %s\n", CONNECTOR_VERSION); return 0;
         default: usage(argv[0]); return c == 'h' ? 0 : 2;
         }
     }
@@ -1480,6 +1579,9 @@ int main(int argc, char **argv)
         list_outputs(&x);
         return 0;
     }
+    if (check_only)
+        return self_check(&x);
+    logmsg("connector-host %s", CONNECTOR_VERSION);
 
     int err_base, ev, er, maj, min;
     if (!XShmQueryExtension(x.dpy) || !XTestQueryExtension(x.dpy, &ev, &er, &maj, &min) ||

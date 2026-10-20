@@ -13,5 +13,8 @@ flock -n 9 || { echo "connector-service is already running" >&2; exit 0; }
 while :; do
     [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 1048576 ] && mv "$LOG" "$LOG.old"
     "$DIR/host/connector-host" --manage-display ${CONNECTOR_OUTPUT:+-o "$CONNECTOR_OUTPUT"} "$@" >> "$LOG" 2>&1
+    rc=$?
+    # 139 = crashed (SIGSEGV), 134 = aborted: worth a bug report
+    [ $rc -eq 0 ] || echo "[$(date +%T)] connector-host exited with status $rc, restarting" >> "$LOG"
     sleep 2
 done
