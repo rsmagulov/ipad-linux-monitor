@@ -15,7 +15,7 @@ display settings.
 - **Touch or trackpad:** tap to click, drag, right/middle click, two-finger scroll; or move the pointer like on a laptop trackpad
 - **Keyboard:** the on-screen keyboard (with Esc, Tab, Ctrl, Alt, arrows…) or a hardware one with shortcuts;
   any language, whatever the computer's layout
-- **Second monitor or mirror** of the laptop's screen, text size 100–200%, auto rotation
+- **Second monitor or mirror** of the computer's screen, text size 100–200%, auto rotation
 - **Free Apple ID friendly:** the app reminds you (on the iPad and the computer) before its 7-day signature runs out
 
 ```
@@ -169,7 +169,7 @@ once the keyboard is open: arrows, Esc and shortcuts (Cmd acts as Ctrl).
 
 | Setting | |
 |---|---|
-| iPad screen | second monitor, or mirror the laptop's own screen |
+| iPad screen | second monitor, or mirror the computer's own screen |
 | Text and window size | 100% = native 2048×1536 (sharpest, smallest), up to 200% = 1024×768 |
 | Sharpness | encoder quality (NVENC cq 22 / 16 / 12) |
 | Orientation | auto / landscape / portrait; in portrait the monitor becomes vertical |

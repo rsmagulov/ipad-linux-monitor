@@ -178,7 +178,7 @@ static int find_output(X11 *x, Rect *out)
     return out->w > 0;
 }
 
-/* The laptop's own screen: the primary output, else any other active one. */
+/* The computer's own screen: the primary output, else any other active one. */
 static int main_output(X11 *x, char *name, size_t n)
 {
     name[0] = 0;

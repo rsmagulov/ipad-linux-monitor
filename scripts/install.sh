@@ -20,10 +20,10 @@ done
 echo "udev: group $GROUP may switch HDMI/DP ports"
 systemctl enable --now usbmuxd >/dev/null 2>&1 || true
 # Wi-Fi/internet: the iPad connects to TCP 27183 (TLS with the paired key)
-# and finds the laptop with a UDP 27183 broadcast.
+# and finds the computer with a UDP 27183 broadcast.
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
     ufw allow 27183/tcp comment 'Connector: iPad over Wi-Fi/internet' >/dev/null
-    ufw allow 27183/udp comment 'Connector: iPad finds the laptop' >/dev/null
+    ufw allow 27183/udp comment 'Connector: iPad finds the computer' >/dev/null
     echo "ufw: opened port 27183 (tcp, udp)"
 fi
 echo "done; make sure your user is in the '$GROUP' group (id -nG)"

@@ -745,7 +745,7 @@ static BOOL copyData(dispatch_data_t data, uint8_t *out, size_t len)
 static NSString *const kScaleKey = @"scale";             /* percent */
 static NSString *const kQualityKey = @"quality";         /* 0 normal, 1 high, 2 maximum */
 static NSString *const kOrientationKey = @"orientation"; /* 0 auto, 1 landscape, 2 portrait */
-static NSString *const kMirrorKey = @"mirror";           /* 0 second monitor, 1 mirror the laptop's screen */
+static NSString *const kMirrorKey = @"mirror";           /* 0 second monitor, 1 mirror the computer's screen */
 static NSString *const kTrackpadKey = @"trackpad";       /* 0 touch where you point, 1 trackpad */
 static NSString *const kIndicatorKey = @"indicator";     /* 1 shows link and frame rate in a corner */
 
@@ -855,7 +855,7 @@ static void scheduleResignReminders(NSDate *expires)
         y = CGRectGetMaxY(title.frame) + 18;
 
         y = [self section:L(@"iPad screen")
-                    items:@[L(@"Second monitor"), L(@"Mirror the laptop")]
+                    items:@[L(@"Second monitor"), L(@"Mirror the computer")]
                  selected:settingInt(kMirrorKey, 0) y:y control:&_mirror];
 
         NSMutableArray *scaleTitles = [NSMutableArray array];
