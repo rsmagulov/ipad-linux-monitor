@@ -1396,9 +1396,9 @@ static void handle_message(X11 *x, Input *in, int type, const uint8_t *p, uint32
                 x->geometry_dirty = 1;
             }
             d->mirror = mirror;
-            if (mirror && d->applied[0])
-                display_off(d);
-            else if (!mirror)
+            /* Mirroring leaves the virtual display as it is: its windows stay
+             * there for when the iPad switches back to it. */
+            if (!mirror)
                 display_apply(d);
         }
         break;
