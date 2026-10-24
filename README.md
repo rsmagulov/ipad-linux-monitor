@@ -214,7 +214,9 @@ connect. To unpair all iPads, delete `~/.config/connector/key`, restart the serv
 
 Peak bitrate: 80 Mbit/s by cable, 30 over Wi-Fi, 10 over the internet (`--lan-bitrate`,
 `--internet-bitrate`; VA-API drivers that only do constant quality ignore it). When the network
-can't keep up, the host skips frames instead of queueing them, so latency doesn't build up.
+can't keep up, the host skips frames instead of queueing them, so latency doesn't build up, and
+with NVENC or x264 it lowers the bitrate until the video fits, raising it again once the network
+recovers (`-vv` logs this every second).
 USB only: `--no-network`; network only: `--no-usb`; another port: `--listen-port`.
 
 ## Troubleshooting

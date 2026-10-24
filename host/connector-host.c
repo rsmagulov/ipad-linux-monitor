@@ -333,7 +333,9 @@ typedef struct {
     struct SwsContext *sws;
     AVBufferRef *hw_device, *hw_frames; /* VA-API */
     int64_t pts;
-    int mbps; /* peak bitrate, depends on how the iPad is connected */
+    int mbps;      /* peak bitrate, depends on how the iPad is connected */
+    double rate;   /* peak bitrate in use, Mbit/s: below mbps while the network can't keep up */
+    int live_rate; /* takes a new peak bitrate without reopening (NVENC, x264) */
 } Encoder;
 
 static void encoder_close(Encoder *e)
@@ -345,6 +347,14 @@ static void encoder_close(Encoder *e)
     e->sws = NULL;
     av_buffer_unref(&e->hw_frames);
     av_buffer_unref(&e->hw_device);
+}
+
+/* Peak bitrate with room for about four frames; the average stays well below. */
+static void encoder_rc(AVCodecContext *c, double mbps)
+{
+    c->rc_max_rate = (int64_t)(mbps * 1e6);
+    c->bit_rate = c->rc_max_rate / 2;
+    c->rc_buffer_size = (int)(c->rc_max_rate / opt.fps * 4);
 }
 
 /* Settings shared by all encoders: no B-frames, long GOP (keyframes on demand),
@@ -359,9 +369,7 @@ static AVCodecContext *encoder_context(const AVCodec *codec, Encoder *e, int w, 
     c->gop_size = opt.fps * 10;
     c->max_b_frames = 0;
     c->pix_fmt = fmt;
-    c->rc_max_rate = (int64_t)e->mbps * 1000000;
-    c->bit_rate = c->rc_max_rate / 2;
-    c->rc_buffer_size = (int)(c->rc_max_rate / opt.fps * 4);
+    encoder_rc(c, e->rate);
     c->flags |= AV_CODEC_FLAG_LOW_DELAY;
     c->color_range = AVCOL_RANGE_MPEG;
     c->colorspace = AVCOL_SPC_BT709;
@@ -460,6 +468,7 @@ static int encoder_try(Encoder *e, const char *name, int w, int h)
         }
     }
     e->ctx = c;
+    e->live_rate = nvenc || strcmp(name, "libx264") == 0;
     e->pkt = av_packet_alloc();
     e->frame = av_frame_alloc();
     e->frame->format = nvenc ? AV_PIX_FMT_BGR0 : vaapi ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
@@ -474,7 +483,7 @@ static int encoder_try(Encoder *e, const char *name, int w, int h)
         sws_setColorspaceDetails(e->sws, sws_getCoefficients(SWS_CS_DEFAULT), 1,
                                  sws_getCoefficients(SWS_CS_ITU709), 0, 0, 1 << 16, 1 << 16);
     }
-    logmsg("encoder: %s %dx%d @%d fps, max %d Mbit/s", name, w, h, opt.fps, e->mbps);
+    logmsg("encoder: %s %dx%d @%d fps, max %g Mbit/s", name, w, h, opt.fps, e->rate);
     return 1;
 }
 
@@ -492,6 +501,15 @@ static int encoder_open(Encoder *e, int w, int h)
     if (strcmp(opt.encoder, "x264") == 0)
         return encoder_try(e, "libx264", w, h);
     return encoder_try(e, opt.encoder, w, h);
+}
+
+/* Changes the peak bitrate from the next frame on (encoders with live_rate).
+ * NVENC answers with a keyframe: FFmpeg resets it for every change. */
+static void encoder_set_rate(Encoder *e, double mbps)
+{
+    e->rate = mbps;
+    if (e->ctx)
+        encoder_rc(e->ctx, mbps);
 }
 
 /* Encodes one captured BGR0 frame; packets are then read from e->ctx. */
@@ -687,6 +705,84 @@ static int device_connect(void)
     if (list)
         usbmuxd_device_list_free(&list);
     return fd;
+}
+
+/* ---------------------------------------------------------------- rate control */
+
+/* Over the network the peak bitrate follows what the link delivers: while
+ * many frames have to be skipped it steps down, and after a calm while with
+ * the video using the cap it steps up again; a step up the link can't take
+ * makes the next try wait twice as long. Each change costs a keyframe on
+ * NVENC, so changes are few and large. The cap is not the output: NVENC
+ * averages a quarter to a half of it. */
+#define RATE_MIN_MBPS 1.0
+#define RATE_HOLD_SEC 5.0
+
+typedef struct {
+    double t0;         /* start of the measuring window */
+    int backlog0;      /* unacknowledged bytes at t0 */
+    long sent, video;  /* bytes handed to the socket / encoded in this window */
+    int skipped;       /* frames skipped in this window */
+    double changed_at; /* last change of the rate (or the start of the link) */
+    double calm_since; /* no frames skipped since */
+    double hold;       /* calm time needed before trying a higher rate */
+    int probing;       /* the last change was an increase */
+} RateCtl;
+
+static void rate_start(RateCtl *r, double now)
+{
+    *r = (RateCtl){.t0 = now, .changed_at = now, .calm_since = now, .hold = RATE_HOLD_SEC};
+}
+
+static double rate_round(double mbps)
+{
+    mbps = (int)(mbps * 2 + 0.5) / 2.0;
+    return mbps < RATE_MIN_MBPS ? RATE_MIN_MBPS : mbps;
+}
+
+/* Runs about once a second; returns a new peak bitrate, or 0 to keep it. */
+static double rate_update(RateCtl *r, Link *l, const Encoder *e, double now)
+{
+    double dt = now - r->t0;
+    if (dt < 1.0)
+        return 0;
+    int backlog = link_backlog(l);
+    double acked = (r->sent - (backlog - r->backlog0)) * 8 / dt / 1e6;
+    double video = r->video * 8 / dt / 1e6;
+    int skipped = r->skipped;
+    if (opt.verbose > 1)
+        logmsg("rate: %.1f s, acked %.1f, video %.1f of %g Mbit/s, %d skipped", dt, acked, video, e->rate, skipped);
+    r->t0 = now;
+    r->backlog0 = backlog;
+    r->sent = r->video = r->skipped = 0;
+
+    if (skipped) {
+        r->calm_since = now;
+        /* A burst of big frames (a scene change) skips a few, a link that
+         * can't keep up skips many. */
+        if (skipped < opt.fps / 4 || now - r->changed_at < 2.0 || e->rate <= RATE_MIN_MBPS)
+            return 0;
+        double target = rate_round(e->rate * 0.6);
+        if (r->probing && now - r->changed_at < 10)
+            r->hold = r->hold * 2 > 60 ? 60 : r->hold * 2;
+        r->probing = 0;
+        r->changed_at = now;
+        logmsg("%s: the network delivers %.1f Mbit/s, video bitrate %g -> %g Mbit/s", link_names[l->kind],
+               acked, e->rate, target);
+        return target;
+    }
+    if (r->probing && now - r->changed_at >= 10) {
+        r->probing = 0;
+        r->hold = r->hold / 2 < RATE_HOLD_SEC ? RATE_HOLD_SEC : r->hold / 2;
+    }
+    if (e->rate >= e->mbps || video < e->rate * 0.2 || now - r->calm_since < r->hold ||
+        now - r->changed_at < r->hold)
+        return 0;
+    double target = rate_round(e->rate * 1.5 > e->mbps ? e->mbps : e->rate * 1.5);
+    r->probing = 1;
+    r->changed_at = now;
+    logmsg("%s: video bitrate %g -> %g Mbit/s", link_names[l->kind], e->rate, target);
+    return target;
 }
 
 /* ---------------------------------------------------------------- network */
@@ -1503,7 +1599,8 @@ static void usage(const char *argv0)
             "                       from the iPad's settings (used by the autostart service)\n"
             "  -l, --list           list xrandr outputs and exit\n"
             "      --check          check what works here (X11, port, encoders, USB) and exit\n"
-            "  -v, --verbose        print stats every 5 seconds\n"
+            "  -v, --verbose        print stats every 5 seconds; -vv also the Wi-Fi/internet\n"
+            "                       bitrate control every second\n"
             "  -V, --version        print the version and exit\n",
             argv0, opt.output, opt.fps, opt.bitrate_mbps, opt.quality, opt.port, opt.listen_port, opt.lan_mbps,
             opt.internet_mbps);
@@ -1534,7 +1631,7 @@ int main(int argc, char **argv)
         case 'e': opt.encoder = optarg; break;
         case 'p': opt.port = atoi(optarg); break;
         case 'l': list_only = 1; break;
-        case 'v': opt.verbose = 1; break;
+        case 'v': opt.verbose++; break;
         case 'm': opt.manage_display = 1; break;
         case 'n': opt.network = 0; break;
         case 'U': opt.usb = 0; break;
@@ -1605,7 +1702,8 @@ int main(int argc, char **argv)
     sig_load();
     double next_sig_check = 0;
 
-    Encoder enc = {.mbps = opt.bitrate_mbps};
+    Encoder enc = {.mbps = opt.bitrate_mbps, .rate = opt.bitrate_mbps};
+    RateCtl rate = {0};
     VirtualDisplay display = {.native_w = 2048, .native_h = 1536, .scale = CONNECTOR_SCALE_DEFAULT};
     Input in = {.display = &display};
     double disconnected_at = 0;
@@ -1701,8 +1799,12 @@ int main(int argc, char **argv)
                        : link.kind == LINK_LAN ? opt.lan_mbps : opt.internet_mbps;
             if (mbps != enc.mbps) {
                 enc.mbps = mbps;
+                enc.rate = mbps;
                 in.reinit_encoder = 1;
+            } else if (enc.rate < mbps && now - disconnected_at > 60) {
+                encoder_set_rate(&enc, mbps); /* a new session, not a reconnect */
             }
+            rate_start(&rate, now);
             if (link.kind == LINK_USB && net.tcp >= 0 && !send_pair(&link))
                 goto disconnected;
         }
@@ -1727,10 +1829,12 @@ int main(int argc, char **argv)
 
             /* Over the network, skip frames while the previous ones are still
              * on their way: queued video is what makes latency grow. */
-            int busy = link.kind != LINK_USB &&
-                       link_backlog(&link) > (enc.mbps * 125000 / 12 > 96 * 1024 ? enc.mbps * 125000 / 12 : 96 * 1024);
-            if (busy)
+            int busy_bytes = (int)(enc.rate * 125000 / 12);
+            int busy = link.kind != LINK_USB && link_backlog(&link) > (busy_bytes > 96 * 1024 ? busy_bytes : 96 * 1024);
+            if (busy) {
                 stat_skipped++;
+                rate.skipped++;
+            }
             else if (x.img && enc.ctx && XShmGetImage(x.dpy, x.root, x.img, x.area.x, x.area.y, AllPlanes)) {
                 if (x.cursor_dirty)
                     cursor_update(&x);
@@ -1759,6 +1863,8 @@ int main(int argc, char **argv)
                     while (avcodec_receive_packet(enc.ctx, enc.pkt) == 0) {
                         int ok = send_msg(&link, MSG_VIDEO, enc.pkt->data, enc.pkt->size);
                         stat_bytes += enc.pkt->size;
+                        rate.video += enc.pkt->size;
+                        rate.sent += CONNECTOR_HDR_LEN + enc.pkt->size;
                         av_packet_unref(enc.pkt);
                         if (!ok)
                             goto disconnected;
@@ -1770,10 +1876,16 @@ int main(int argc, char **argv)
             }
         }
 
+        if (link.fd >= 0 && link.kind != LINK_USB && enc.live_rate) {
+            double r = rate_update(&rate, &link, &enc, now);
+            if (r)
+                encoder_set_rate(&enc, r);
+        }
+
         if (opt.verbose && link.fd >= 0 && now - stat_t0 >= 5.0) {
             double dt = now - stat_t0;
-            logmsg("%s: %.1f fps, %.1f Mbit/s, encode+send %.1f ms/frame%s", link_names[link.kind],
-                   stat_frames / dt, stat_bytes * 8 / dt / 1e6,
+            logmsg("%s: %.1f fps, %.1f of max %g Mbit/s, encode+send %.1f ms/frame%s", link_names[link.kind],
+                   stat_frames / dt, stat_bytes * 8 / dt / 1e6, enc.rate,
                    stat_frames ? enc_time / stat_frames * 1000 : 0,
                    stat_skipped ? ", skipping frames: network busy" : "");
             stat_t0 = now;
