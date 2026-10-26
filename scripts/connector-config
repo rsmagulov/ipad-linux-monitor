@@ -1,6 +1,6 @@
 # Sourced by the other scripts. Sets CONNECTOR_OUTPUT (xrandr name) and
-# CONNECTOR_DRM (kernel connector name) of the spare video port that becomes
-# the iPad's virtual monitor. The first detection is saved in
+# CONNECTOR_DRM (kernel connector name, "none" for an X driver's VIRTUAL output)
+# of the spare video port that becomes the iPad's virtual monitor. The first detection is saved in
 # ~/.config/connector/config; edit or delete that file to pick another port.
 CONNECTOR_CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}/connector/config
 # shellcheck disable=SC1090
@@ -28,7 +28,10 @@ connector_detect() {
         echo "$out $conn"
         return 0
     done
-    return 1
+    # No spare port (an old Intel with VGA only): the intel X driver
+    # (xf86-video-intel) has VIRTUAL outputs that need no kernel connector.
+    out=$(xrandr 2>/dev/null | awk '$1 ~ /^VIRTUAL[0-9]+$/ { print $1; exit }')
+    [ -n "$out" ] && echo "$out none"
 }
 
 if [ -z "$CONNECTOR_OUTPUT" ] || [ -z "$CONNECTOR_DRM" ]; then

@@ -14,11 +14,17 @@ set -e
 }
 OUTPUT=$CONNECTOR_OUTPUT
 CONNECTOR=$CONNECTOR_DRM
-SYSFS=$(ls -d /sys/class/drm/card*-"$CONNECTOR" 2>/dev/null | head -1)
-[ -n "$SYSFS" ] || { echo "no DRM connector $CONNECTOR found" >&2; exit 1; }
+SYSFS=
+if [ "$CONNECTOR" != none ]; then
+    SYSFS=$(ls -d /sys/class/drm/card*-"$CONNECTOR" 2>/dev/null | head -1)
+    [ -n "$SYSFS" ] || { echo "no DRM connector $CONNECTOR found" >&2; exit 1; }
+fi
 
+# A VIRTUAL output of the X driver is there already: nothing to force.
 force() {
-    if [ -w "$SYSFS/status" ]; then
+    if [ -z "$SYSFS" ]; then
+        return 0
+    elif [ -w "$SYSFS/status" ]; then
         echo "$1" > "$SYSFS/status"
     else
         echo "$SYSFS/status is not writable, using sudo (run scripts/install.sh once to avoid this)" >&2
@@ -34,7 +40,7 @@ on)
     W=${MODE%x*}; H=${MODE#*x}
     force on
     i=0
-    until connected; do
+    until [ -z "$SYSFS" ] || connected; do
         i=$((i + 1)); [ $i -lt 30 ] || { echo "$OUTPUT did not show up in xrandr" >&2; exit 1; }
         sleep 0.1
     done
@@ -62,7 +68,7 @@ off)
     echo "virtual display $OUTPUT off"
     ;;
 status)
-    echo "$SYSFS: $(cat "$SYSFS/status")"
+    [ -z "$SYSFS" ] || echo "$SYSFS: $(cat "$SYSFS/status")"
     xrandr | grep "^$OUTPUT " || true
     ;;
 *)
