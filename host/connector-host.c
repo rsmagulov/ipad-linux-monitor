@@ -1400,8 +1400,9 @@ static void handle_message(X11 *x, Input *in, int type, const uint8_t *p, uint32
             }
             d->mirror = mirror;
             /* Mirroring leaves the virtual display as it is: its windows stay
-             * there for when the iPad switches back to it. */
-            if (!mirror)
+             * there for when the iPad switches back to it. With no screen of
+             * the computer's own to mirror, the iPad shows the virtual one. */
+            if (strcmp(x->output, opt.output) == 0)
                 display_apply(d);
         }
         break;
@@ -1729,6 +1730,19 @@ int main(int argc, char **argv)
 
         if (x.geometry_dirty) {
             x.geometry_dirty = 0;
+            /* Mirroring follows the computer's screen; when its monitor is
+             * unplugged, the virtual display takes its place on the iPad. */
+            if (display.mirror && link.fd >= 0) {
+                char want[64];
+                if (!main_output(&x, want, sizeof(want))) {
+                    snprintf(want, sizeof(want), "%s", opt.output);
+                    display_apply(&display);
+                }
+                if (strcmp(want, x.output) != 0) {
+                    logmsg("mirroring: %s", want);
+                    snprintf(x.output, sizeof(x.output), "%s", want);
+                }
+            }
             Rect r;
             find_output(&x, &r);
             if (memcmp(&r, &x.area, sizeof(r)) != 0) {
