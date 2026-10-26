@@ -33,7 +33,8 @@ display settings.
 ## Status
 
 Works daily on one setup: Linux Mint 22 (Cinnamon, X11), a laptop with Intel + NVIDIA graphics,
-iPad mini 2 on iOS 12.5.8. Other setups should work if they meet the requirements below,
+iPad mini 2 on iOS 12.5.8. Also tried on a 2007 desktop: Lubuntu 22.04 (LXQt), Intel G31 graphics
+with VGA only, Core 2 Duo. Other setups should work if they meet the requirements below,
 but haven't been tried. Reports and pull requests are welcome.
 
 ## Compatibility
@@ -46,7 +47,8 @@ but haven't been tried. Reports and pull requests are welcome.
 | Debian, Ubuntu, Arch, Manjaro… with Xfce, MATE, Cinnamon, i3… | Fedora 40+ (GNOME, KDE) |
 | KDE Plasma with the X11 session | Pop!_OS 24.04 (COSMIC) |
 
-**GPU:** the virtual monitor needs a spare HDMI/DP port on an Intel or AMD GPU (see below).
+**GPU:** the virtual monitor needs a spare HDMI/DP port on an Intel or AMD GPU, or an older Intel GPU
+run by the intel X driver (see below).
 Encoding uses NVENC on NVIDIA, VA-API on Intel/AMD, or x264 on the CPU, whichever works first.
 
 **iPad:** any 64-bit iPad with iOS 12 or later; one build of the app runs on all of them.
@@ -79,7 +81,9 @@ and [Weylus](https://github.com/H-M-H/Weylus) (in the tablet's browser, touch an
 - **A spare HDMI or DisplayPort port** on an Intel or AMD GPU (i915/xe/amdgpu/radeon/nouveau kernel driver).
   Nothing gets plugged into it: the kernel is told a monitor is there, which makes a virtual
   monitor the desktop treats like a real one. NVIDIA's proprietary driver can't do this,
-  but on hybrid laptops the Intel/AMD side usually has a port
+  but on hybrid laptops the Intel/AMD side usually has a port.
+  **Or no spare port at all** on an older Intel GPU run by the intel X driver
+  (`xserver-xorg-video-intel`): its `VIRTUAL1` output is used instead. Check: `xrandr` lists `VIRTUAL1`
 - Hardware encoding (NVENC or VA-API) is optional; without it the host uses x264 (more CPU)
 - An iPad with iOS 12 or later and its Lightning/USB cable
 - A free Apple ID to sign the app (no developer account needed)
@@ -89,7 +93,9 @@ and [Weylus](https://github.com/H-M-H/Weylus) (in the tablet's browser, touch an
 ### 1. The host (Linux)
 
 **Debian, Ubuntu, Mint:** download `connector_*.deb` for your release from
-[Releases](../../releases), then
+[Releases](../../releases): `focal` Ubuntu 20.04 / Mint 20, `jammy` 22.04 / Mint 21, `noble` 24.04 / Mint 22,
+`resolute` 26.04, `bookworm` Debian 12, `trixie` Debian 13 (Kubuntu, Lubuntu, Xubuntu, Pop!_OS: as their
+Ubuntu release; `. /etc/os-release; echo $UBUNTU_CODENAME $VERSION_CODENAME` tells which). Then
 
 ```sh
 sudo apt install ./connector_*.deb
@@ -101,18 +107,19 @@ connector-autostart on      # start with the desktop session (off: connector-aut
 
 ```sh
 sudo apt install build-essential libx11-dev libxext-dev libxfixes-dev libxrandr-dev libxtst-dev \
-    libavcodec-dev libavutil-dev libswscale-dev libusbmuxd-dev libssl-dev libxkbcommon-dev usbmuxd
+    libavcodec-dev libavutil-dev libswscale-dev libusbmuxd-dev libssl-dev libxkbcommon-dev pkg-config usbmuxd
 make                        # then run from here: scripts/..., or: sudo make install (to /usr/local)
 sudo scripts/install.sh     # lets your user switch the spare port, opens port 27183 in ufw
 scripts/autostart on        # start with the desktop session (off: scripts/autostart off)
 ```
 
-`make deb` builds the package for the release you're on. Commands below are given as in a
+`make deb` builds the package for the release you're on (`packaging/build-debs.sh`: for every release, in Docker). Commands below are given as in a
 source checkout (`scripts/connector`); with the package they are `connector`, `connector-display`,
 `connector-autostart`, `connector-ipad-install`, `connector-setup`, `connector-report`.
 
 The spare port is detected on the first run and saved in `~/.config/connector/config`
-(`CONNECTOR_OUTPUT` is the xrandr name, `CONNECTOR_DRM` the kernel one, as in `/sys/class/drm/card*-NAME`).
+(`CONNECTOR_OUTPUT` is the xrandr name, `CONNECTOR_DRM` the kernel one, as in `/sys/class/drm/card*-NAME`,
+or `none` for `VIRTUAL1`).
 Edit that file if the guess is wrong. To check: `scripts/connector-display on`, and a new monitor
 should appear in the display settings. `scripts/connector-display off` removes it.
 
@@ -153,6 +160,9 @@ scripts/ipad-install                       # builds, signs and installs
 Open Connector on the iPad with the cable plugged in. The monitor appears, and the iPad receives
 the key for Wi-Fi (`~/.config/connector/key`). From now on, on the same Wi-Fi, just open the app.
 
+The iPad remembers up to 8 computers, each paired by cable once. Over Wi-Fi it connects to the one
+used last, or to any other that answers; Settings → Computers switches to another one or forgets one.
+
 ## Use
 
 The host waits in the background. Open Connector on the iPad (cable or same Wi-Fi) and the monitor
@@ -183,13 +193,13 @@ once the keyboard is open: arrows, Esc and shortcuts (Cmd acts as Ctrl).
 
 | Setting | |
 |---|---|
-| iPad screen | second monitor, or mirror the computer's own screen |
+| iPad screen | second monitor, or mirror the computer's own screen; with its monitor unplugged, the iPad becomes the computer's screen |
 | Text and window size | 100% = native 2048×1536 (sharpest, smallest), up to 200% = 1024×768 |
 | Sharpness | encoder quality (NVENC cq 22 / 16 / 12) |
 | Orientation | auto / landscape / portrait; in portrait the monitor becomes vertical |
 | Pointer | touch where you point, or trackpad |
 | Indicator | link and frame rate in a corner |
-| Wi-Fi and internet | which computer, how connected now, the internet address |
+| Wi-Fi and internet | which computer, how connected now, its internet address, the paired computers (switch, forget) |
 
 Text gets crisper with greyscale font antialiasing instead of RGB (subpixel colour fringes blur
 because H.264 keeps colour at half resolution).
@@ -207,7 +217,8 @@ connects to TCP 27183. A guest network that isolates clients won't work.
 
 Set the address on the computer (the iPad picks it up on the next cable connection):
 `echo myhome.example.com:27183 > ~/.config/connector/address`, or type it on the iPad under
-Settings → Internet address. The iPad tries: Wi-Fi discovery, the last Wi-Fi address, the internet address.
+Settings → Internet address (each computer has its own). The iPad tries: Wi-Fi discovery, the last Wi-Fi
+addresses, the internet addresses.
 
 Traffic is TLS 1.2 with the pre-shared key (PSK-AES128-GCM-SHA256); without the key nobody can
 connect. To unpair all iPads, delete `~/.config/connector/key`, restart the service and pair by cable again.
@@ -254,7 +265,7 @@ USB only: `--no-network`; network only: `--no-usb`; another port: `--listen-port
 | `scripts/ipad-install` | builds, signs and installs the app |
 | `scripts/report` | collects a bug report |
 | `scripts/install.sh` | one-time setup (sudo) |
-| `Makefile`, `packaging/` | `make install`, `make deb` |
+| `Makefile`, `packaging/` | `make install`, `make deb`, `packaging/build-debs.sh` |
 
 ## License
 
