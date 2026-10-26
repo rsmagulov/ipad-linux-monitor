@@ -202,6 +202,15 @@ static int main_output(X11 *x, char *name, size_t n)
     return name[0] != 0;
 }
 
+/* No screen but the virtual one (the monitor unplugged): it then stays on, even
+ * with no iPad, since a desktop with no screen at all breaks (pcmanfm-qt
+ * --desktop crashes on it, and LXQt gives up on the desktop). */
+static int headless(X11 *x)
+{
+    char name[64];
+    return !main_output(x, name, sizeof(name));
+}
+
 static void list_outputs(X11 *x)
 {
     XRRScreenResources *res = XRRGetScreenResourcesCurrent(x->dpy, x->root);
@@ -1711,7 +1720,7 @@ int main(int argc, char **argv)
     VirtualDisplay display = {.native_w = 2048, .native_h = 1536, .scale = CONNECTOR_SCALE_DEFAULT};
     Input in = {.display = &display};
     double disconnected_at = 0;
-    if (opt.manage_display)
+    if (opt.manage_display && !headless(&x))
         display_off(&display);
     Link link = {.fd = -1};
     int link_new = 0;
@@ -1730,6 +1739,8 @@ int main(int argc, char **argv)
 
         if (x.geometry_dirty) {
             x.geometry_dirty = 0;
+            if (opt.manage_display && !display.applied[0] && headless(&x))
+                display_apply(&display);
             /* Mirroring follows the computer's screen; when its monitor is
              * unplugged, the virtual display takes its place on the iPad. */
             if (display.mirror && link.fd >= 0) {
@@ -1779,8 +1790,12 @@ int main(int argc, char **argv)
         }
 
         double now = now_sec();
-        if (link.fd < 0 && display.applied[0] && now - disconnected_at > opt.grace)
-            display_off(&display);
+        if (link.fd < 0 && display.applied[0] && now - disconnected_at > opt.grace) {
+            if (headless(&x))
+                disconnected_at = now; /* the computer's only screen: look again later */
+            else
+                display_off(&display);
+        }
         if (now >= next_sig_check) {
             next_sig_check = now + 600;
             sig_check();
@@ -1939,7 +1954,7 @@ int main(int argc, char **argv)
 
     if (link.fd >= 0)
         link_close(x.dpy, &link);
-    if (display.applied[0])
+    if (display.applied[0] && !headless(&x))
         display_off(&display);
     encoder_close(&enc);
     capture_free(&x);
