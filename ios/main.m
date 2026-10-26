@@ -336,29 +336,109 @@ static void forEachNAL(const uint8_t *d, size_t len, void (^block)(const uint8_t
 
 #pragma mark - Pairing
 
-static NSString *const kPairKeyKey = @"pairKey";         /* NSData, from the host over USB */
-static NSString *const kPairNameKey = @"pairName";       /* the computer's host name */
-static NSString *const kPairPortKey = @"pairPort";
+/* Every computer the iPad was paired with by cable, the one used last first. */
+static NSString *const kComputersKey = @"computers";
+/* in each computer's dictionary: */
+static NSString *const kKeyKey = @"key";         /* NSData, from the host over USB */
+static NSString *const kNameKey = @"name";       /* the computer's host name */
+static NSString *const kPortKey = @"port";
 static NSString *const kPairAddressKey = @"pairAddress"; /* internet address the host told us */
-static NSString *const kAddressKey = @"address";         /* internet address typed on the iPad (wins) */
+static NSString *const kAddressKey = @"address";         /* internet address typed on the iPad (wins, "" = none) */
 static NSString *const kLastLANKey = @"lastLAN";         /* where the host was last found on Wi-Fi */
+static const NSUInteger kMaxComputers = 8;
 
-static NSData *pairingKey(void)
+static NSObject *computersLock(void)
 {
-    NSData *k = [NSUserDefaults.standardUserDefaults dataForKey:kPairKeyKey];
-    return k.length == CONNECTOR_KEY_LEN ? k : nil;
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [[NSObject alloc] init]; });
+    return lock;
 }
 
-static NSString *pairedName(void)
+/* App 1.4 knew one computer, kept under these keys of its own. */
+static void migrateSinglePairing(NSUserDefaults *d)
 {
-    return [NSUserDefaults.standardUserDefaults stringForKey:kPairNameKey] ?: L(@"the computer");
+    NSData *key = [d dataForKey:@"pairKey"];
+    if (key.length == CONNECTOR_KEY_LEN && ![d arrayForKey:kComputersKey]) {
+        NSMutableDictionary *c = [NSMutableDictionary dictionary];
+        c[kKeyKey] = key;
+        c[kNameKey] = [d stringForKey:@"pairName"] ?: L(@"the computer");
+        c[kPortKey] = @([d integerForKey:@"pairPort"] ?: CONNECTOR_PORT);
+        c[kPairAddressKey] = [d stringForKey:@"pairAddress"];
+        NSString *typed = [d stringForKey:@"address"];
+        c[kAddressKey] = typed.length ? typed : nil; /* 1.4 fell back to the host's address on "" */
+        c[kLastLANKey] = [d stringForKey:@"lastLAN"];
+        [d setObject:@[c] forKey:kComputersKey];
+    }
+    if (key)
+        for (NSString *k in @[@"pairKey", @"pairName", @"pairPort", @"pairAddress", @"address", @"lastLAN"])
+            [d removeObjectForKey:k];
 }
 
-static NSString *internetAddress(void)
+static NSArray<NSDictionary *> *computers(void)
 {
-    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    NSString *a = [d stringForKey:kAddressKey];
-    return a.length ? a : [d stringForKey:kPairAddressKey];
+    @synchronized(computersLock()) {
+        NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+        migrateSinglePairing(d);
+        NSMutableArray *list = [NSMutableArray array];
+        for (NSDictionary *c in [d arrayForKey:kComputersKey])
+            if ([c isKindOfClass:NSDictionary.class] && [c[kKeyKey] length] == CONNECTOR_KEY_LEN)
+                [list addObject:c];
+        return list;
+    }
+}
+
+/* Applies `change` to the computer with `key`, or forgets it if `change` returns NO;
+ * `front` makes it the one used last. */
+static void editComputer(NSData *key, BOOL front, BOOL (^change)(NSMutableDictionary *c))
+{
+    @synchronized(computersLock()) {
+        NSMutableArray *list = [computers() mutableCopy];
+        for (NSUInteger i = 0; i < list.count; i++) {
+            if (![list[i][kKeyKey] isEqualToData:key])
+                continue;
+            NSMutableDictionary *c = [list[i] mutableCopy];
+            [list removeObjectAtIndex:i];
+            if (change(c))
+                [list insertObject:c atIndex:front ? 0 : i];
+            break;
+        }
+        [NSUserDefaults.standardUserDefaults setObject:list forKey:kComputersKey];
+    }
+}
+
+/* A cable pairing: the computer goes first. The same key or the same name is the
+ * same computer (its key may have been made anew); the address typed for it and
+ * where it was on Wi-Fi stay. */
+static void addComputer(NSMutableDictionary *c)
+{
+    @synchronized(computersLock()) {
+        NSMutableArray *list = [computers() mutableCopy];
+        for (NSUInteger i = list.count; i-- > 0;) {
+            NSDictionary *old = list[i];
+            if (![old[kKeyKey] isEqualToData:c[kKeyKey]] && ![old[kNameKey] isEqualToString:c[kNameKey]])
+                continue;
+            for (NSString *k in @[kAddressKey, kLastLANKey])
+                if (!c[k])
+                    c[k] = old[k];
+            [list removeObjectAtIndex:i];
+        }
+        [list insertObject:c atIndex:0];
+        while (list.count > kMaxComputers)
+            [list removeLastObject];
+        [NSUserDefaults.standardUserDefaults setObject:list forKey:kComputersKey];
+    }
+}
+
+static NSString *computerName(NSDictionary *c)
+{
+    return c[kNameKey] ?: L(@"the computer");
+}
+
+static NSString *internetAddress(NSDictionary *c)
+{
+    NSString *typed = c[kAddressKey];
+    return typed ? typed : c[kPairAddressKey];
 }
 
 /* "host", "host:port", "[v6]:port" or a bare IPv6 address. */
@@ -420,6 +500,7 @@ typedef NS_ENUM(int, LinkKind) { LinkNone, LinkUSB, LinkLAN, LinkInternet };
 @property(atomic, readonly, copy) NSString *networkStatus; /* what the Wi-Fi side is doing, for the UI */
 - (void)start;
 - (void)send:(uint8_t)type payload:(const void *)payload length:(uint32_t)len;
+- (void)dropNetwork; /* ends a Wi-Fi/internet session, so the computers are looked for again */
 @end
 
 @interface Connection ()
@@ -588,16 +669,12 @@ static BOOL readFully(int fd, uint8_t *buf, size_t len)
     if (o < len && o + 1 + p[o] <= len)
         address = [[NSString alloc] initWithBytes:p + o + 1 length:p[o] encoding:NSUTF8StringEncoding];
 
-    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    if (![key isEqualToData:pairingKey()])
-        [d removeObjectForKey:kLastLANKey]; /* another computer */
-    [d setObject:key forKey:kPairKeyKey];
-    [d setObject:name.length ? name : L(@"the computer") forKey:kPairNameKey];
-    [d setInteger:port forKey:kPairPortKey];
-    if (address.length)
-        [d setObject:address forKey:kPairAddressKey];
-    else
-        [d removeObjectForKey:kPairAddressKey];
+    NSMutableDictionary *c = [NSMutableDictionary dictionary];
+    c[kKeyKey] = key;
+    c[kNameKey] = name.length ? name : L(@"the computer");
+    c[kPortKey] = @(port);
+    c[kPairAddressKey] = address.length ? address : nil;
+    addComputer(c);
     APPLOG(@"paired with “%@” (port %u, internet address %@)", name, port, address.length ? @"set" : @"none");
     [self.delegate connectionDidPair];
 }
@@ -608,44 +685,63 @@ static BOOL readFully(int fd, uint8_t *buf, size_t len)
 {
     for (;;) {
         @autoreleasepool {
-            NSData *key = pairingKey();
-            if (self.link != LinkNone || !key) {
-                if (!key)
+            NSArray<NSDictionary *> *list = computers();
+            if (self.link != LinkNone || !list.count) {
+                if (!list.count)
                     [self setStatus:@""];
                 sleep(1);
                 continue;
             }
-            NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-            NSString *name = pairedName(), *host = nil;
-            uint16_t port = (uint16_t)[d integerForKey:kPairPortKey] ?: CONNECTOR_PORT;
-            BOOL connected = NO;
+            /* One computer is named in the status; several, by default the one used last. */
+            NSString *name = computerName(list[0]), *host = nil, *address = nil;
+            uint16_t port = 0;
+            BOOL connected = NO, triedAddress = NO;
 
-            [self setStatus:[NSString stringWithFormat:L(@"Looking for “%@” on this Wi-Fi…"), name]];
+            [self setStatus:list.count == 1 ? [NSString stringWithFormat:L(@"Looking for “%@” on this Wi-Fi…"), name]
+                                            : L(@"Looking for your computers on this Wi-Fi…")];
             _attempts = [NSMutableArray array];
-            if ([self discover:hostId(key) host:&host port:&port]) {
-                [_attempts addObject:[NSString stringWithFormat:@"wifi: found the computer at %@:%u", host, port]];
-                [d setObject:host forKey:kLastLANKey];
-                [self setStatus:[NSString stringWithFormat:L(@"Connecting to “%@” over Wi-Fi (%@)…"), name, host]];
-                connected = [self runSessionTo:host port:port kind:LinkLAN key:key timeout:6];
-            } else if ((host = [d stringForKey:kLastLANKey])) {
-                [_attempts addObject:@"wifi: no answer to the discovery broadcast, trying the last address"];
-                /* Broadcasts may be filtered; the last known address may still work. */
-                connected = [self runSessionTo:host port:port kind:LinkLAN key:key timeout:2];
+            NSMutableArray<NSData *> *ids = [NSMutableArray array];
+            for (NSDictionary *c in list)
+                [ids addObject:hostId(c[kKeyKey])];
+            NSInteger found = [self discover:ids host:&host port:&port];
+            if (found >= 0) {
+                NSDictionary *c = list[found];
+                [_attempts addObject:[NSString stringWithFormat:@"wifi: found “%@” at %@:%u", computerName(c), host, port]];
+                editComputer(c[kKeyKey], NO, ^BOOL(NSMutableDictionary *m) {
+                    m[kLastLANKey] = host;
+                    return YES;
+                });
+                [self setStatus:[NSString stringWithFormat:L(@"Connecting to “%@” over Wi-Fi (%@)…"), computerName(c), host]];
+                connected = [self runSessionTo:host port:port kind:LinkLAN key:c[kKeyKey] timeout:6];
+            } else {
+                /* Broadcasts may be filtered; the last known addresses may still work. */
+                for (NSDictionary *c in list) {
+                    if (connected || self.link != LinkNone || !(host = c[kLastLANKey]))
+                        continue;
+                    [_attempts addObject:[NSString stringWithFormat:
+                        @"wifi: no answer to the discovery broadcast, trying the last address of “%@”", computerName(c)]];
+                    connected = [self runSessionTo:host port:[c[kPortKey] intValue] ?: CONNECTOR_PORT kind:LinkLAN
+                                               key:c[kKeyKey] timeout:2];
+                }
             }
 
-            NSString *address = internetAddress();
-            if (!connected && self.link == LinkNone && address.length) {
-                if (parseAddress(address, &host, &port)) {
-                    [self setStatus:[NSString stringWithFormat:L(@"Connecting over the internet to %@…"), address]];
-                    connected = [self runSessionTo:host port:port kind:LinkInternet key:key timeout:8];
+            for (NSDictionary *c in list) {
+                NSString *a = internetAddress(c);
+                if (connected || self.link != LinkNone || !a.length)
+                    continue;
+                triedAddress = YES;
+                address = address ?: a;
+                if (parseAddress(a, &host, &port)) {
+                    [self setStatus:[NSString stringWithFormat:L(@"Connecting over the internet to %@…"), a]];
+                    connected = [self runSessionTo:host port:port kind:LinkInternet key:c[kKeyKey] timeout:8];
                 } else {
-                    [self setStatus:[NSString stringWithFormat:L(@"Can't read the address “%@”"), address]];
+                    [self setStatus:[NSString stringWithFormat:L(@"Can't read the address “%@”"), a]];
                     sleep(3);
                 }
             }
 
             if (!connected && self.link == LinkNone) {
-                if (!host && !address.length)
+                if (found < 0 && !triedAddress)
                     [_attempts addObject:@"wifi: no answer to the discovery broadcast, no internet address set"];
                 /* every few seconds: log only when something changed */
                 NSString *summary = [_attempts componentsJoinedByString:@"\n"];
@@ -655,13 +751,22 @@ static BOOL readFully(int fd, uint8_t *buf, size_t len)
                     APPLOG(@"network: not connected, retrying every few seconds");
                 }
                 _lastFailure = summary;
-                [self setStatus:address.length
-                    ? [NSString stringWithFormat:L(@"“%@” is not on this Wi-Fi nor at %@. Retrying…"), name, address]
-                    : [NSString stringWithFormat:L(@"“%@” is not on this Wi-Fi. Retrying…"), name]];
+                [self setStatus:list.count > 1 ? L(@"None of your computers answers. Retrying…")
+                                : address.length
+                                ? [NSString stringWithFormat:L(@"“%@” is not on this Wi-Fi nor at %@. Retrying…"), name, address]
+                                : [NSString stringWithFormat:L(@"“%@” is not on this Wi-Fi. Retrying…"), name]];
                 sleep(3);
             }
         }
     }
+}
+
+- (void)dropNetwork
+{
+    dispatch_sync(_writeQueue, ^{
+        if (self->_net)
+            nw_connection_cancel(self->_net);
+    });
 }
 
 static void broadcastQuery(int fd)
@@ -684,33 +789,38 @@ static void broadcastQuery(int fd)
     freeifaddrs(ifs);
 }
 
-/* Asks the local network for the paired host; ~1.5 s at most. */
-- (BOOL)discover:(NSData *)wanted host:(NSString **)host port:(uint16_t *)port
+/* Asks the local network for the paired hosts; ~1.5 s at most. Returns the index
+ * in `ids` of the first one that answered (0 ends the search at once), or -1. */
+- (NSInteger)discover:(NSArray<NSData *> *)ids host:(NSString **)host port:(uint16_t *)port
 {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0)
-        return NO;
+        return -1;
     int one = 1;
     setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
     struct timeval tv = {0, 100000};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    BOOL found = NO;
-    for (int round = 0; round < 3 && !found; round++) {
+    NSInteger found = -1;
+    for (int round = 0; round < 3 && found < 0; round++) {
         broadcastQuery(fd);
         CFTimeInterval until = CACurrentMediaTime() + 0.5;
-        while (!found && CACurrentMediaTime() < until) {
+        while (found != 0 && CACurrentMediaTime() < until) {
             uint8_t r[64];
             struct sockaddr_in from;
             socklen_t fl = sizeof(from);
             ssize_t n = recvfrom(fd, r, sizeof(r), 0, (struct sockaddr *)&from, &fl);
-            if (n < 4 + CONNECTOR_ID_LEN + 2 || memcmp(r, CONNECTOR_DISCOVER_REPLY, 4) != 0 ||
-                memcmp(r + 4, wanted.bytes, CONNECTOR_ID_LEN) != 0)
+            if (n < 4 + CONNECTOR_ID_LEN + 2 || memcmp(r, CONNECTOR_DISCOVER_REPLY, 4) != 0)
                 continue;
+            NSInteger i = 0, end = found < 0 ? (NSInteger)ids.count : found;
+            while (i < end && memcmp(r + 4, ids[i].bytes, CONNECTOR_ID_LEN) != 0)
+                i++;
+            if (i == end)
+                continue;
+            found = i;
             char ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
             *host = @(ip);
             *port = (uint16_t)(r[4 + CONNECTOR_ID_LEN] << 8 | r[5 + CONNECTOR_ID_LEN]);
-            found = YES;
         }
     }
     close(fd);
@@ -791,6 +901,7 @@ static BOOL isIPAddress(NSString *s)
     }
 
     APPLOG(@"%@: connected", where);
+    editComputer(key, YES, ^BOOL(NSMutableDictionary *m) { return YES; }); /* now the one used last */
     failure = @"closed";
     _lastFailure = nil;
     [self setStatus:@""];
@@ -987,9 +1098,10 @@ static void scheduleResignReminders(NSDate *expires)
 @property(nonatomic, copy) void (^onChange)(void);
 @property(nonatomic, copy) void (^onClose)(void);
 @property(nonatomic, copy) void (^onEditAddress)(void);
+@property(nonatomic, copy) void (^onComputers)(void);
 @property(nonatomic, copy) void (^onKeyboard)(void);
 @property(nonatomic, copy) void (^onLog)(void);
-- (void)setNetworkLine:(NSString *)line address:(NSString *)address;
+- (void)setNetworkLine:(NSString *)line address:(NSString *)address computers:(NSString *)names;
 - (void)fitInto:(CGSize)size;
 @end
 
@@ -998,7 +1110,7 @@ static void scheduleResignReminders(NSDate *expires)
     CGFloat _contentHeight;
     UISegmentedControl *_mirror, *_scale, *_quality, *_orientation, *_trackpad, *_indicator;
     UILabel *_networkLine;
-    UIButton *_address;
+    UIButton *_address, *_computers;
 }
 
 - (instancetype)init
@@ -1053,7 +1165,8 @@ static void scheduleResignReminders(NSDate *expires)
         _networkLine.adjustsFontSizeToFitWidth = NO;
         _networkLine.frame = CGRectMake(24, CGRectGetMaxY(net.frame) + 2, self.bounds.size.width - 48, 42);
         _address = [self button:@"" y:CGRectGetMaxY(_networkLine.frame) + 2 action:@selector(editAddress)];
-        y = CGRectGetMaxY(_address.frame) + 14;
+        _computers = [self button:@"" y:CGRectGetMaxY(_address.frame) action:@selector(editComputers)];
+        y = CGRectGetMaxY(_computers.frame) + 14;
 
         NSDate *expires = signatureExpiry();
         UILabel *sig = [self label:expires ? [NSString stringWithFormat:L(@"App signature valid until %@"),
@@ -1161,6 +1274,12 @@ static void scheduleResignReminders(NSDate *expires)
         self.onEditAddress();
 }
 
+- (void)editComputers
+{
+    if (self.onComputers)
+        self.onComputers();
+}
+
 - (void)keyboard
 {
     if (self.onKeyboard)
@@ -1173,13 +1292,14 @@ static void scheduleResignReminders(NSDate *expires)
         self.onLog();
 }
 
-- (void)setNetworkLine:(NSString *)line address:(NSString *)address
+- (void)setNetworkLine:(NSString *)line address:(NSString *)address computers:(NSString *)names
 {
     _networkLine.text = line;
-    _address.hidden = !pairingKey();
+    _address.hidden = _computers.hidden = !names.length;
     [_address setTitle:[NSString stringWithFormat:L(@"Internet address: %@ (change)"),
                                                    address.length ? address : L(@"not set")]
               forState:UIControlStateNormal];
+    [_computers setTitle:[NSString stringWithFormat:L(@"Computers: %@ (change)"), names] forState:UIControlStateNormal];
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {}
@@ -1436,7 +1556,7 @@ static NSString *linkName(LinkKind k)
         NSString *how;
         if (_link != LinkNone)
             how = @"";
-        else if (!pairingKey())
+        else if (!computers().count)
             how = L(@"Connect the iPad to the computer with the cable.\n"
                     @"After the first time by cable it also works over Wi-Fi.\n");
         else
@@ -1450,10 +1570,16 @@ static NSString *linkName(LinkKind k)
 
 - (void)refreshSettingsNetwork
 {
-    NSString *line = pairingKey()
-        ? [NSString stringWithFormat:L(@"Computer “%@”, now %@."), pairedName(), linkName(_link)]
+    NSArray<NSDictionary *> *list = computers();
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSDictionary *c in list)
+        [names addObject:computerName(c)];
+    /* the first one is the one connected now, or used last */
+    NSString *line = list.count
+        ? [NSString stringWithFormat:L(@"Computer “%@”, now %@."), names[0], linkName(_link)]
         : L(@"Not paired yet: connect the iPad by cable once.");
-    [_settings setNetworkLine:line address:internetAddress()];
+    [_settings setNetworkLine:line address:list.count ? internetAddress(list[0]) : nil
+                    computers:[names componentsJoinedByString:@", "]];
 }
 
 - (void)updateIndicator
@@ -1463,15 +1589,20 @@ static NSString *linkName(LinkKind k)
     _indicator.text = [NSString stringWithFormat:L(@"%@ · %d fps"), linkName(_link), frames];
 }
 
+/* The internet address of the computer used last (the first one). */
 - (void)editAddress
 {
+    NSDictionary *c = computers().firstObject;
+    if (!c)
+        return;
+    NSData *key = c[kKeyKey];
     UIAlertController *a = [UIAlertController
-        alertControllerWithTitle:L(@"Internet address")
+        alertControllerWithTitle:[NSString stringWithFormat:L(@"Internet address of “%@”"), computerName(c)]
                          message:L(@"Name or IP and port of the computer as reachable from the internet, "
                                    @"for example myhome.example.com:27183. Not needed on the same Wi-Fi.")
                   preferredStyle:UIAlertControllerStyleAlert];
     [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
-        f.text = internetAddress();
+        f.text = internetAddress(c);
         f.placeholder = L(@"name-or-ip:27183");
         f.keyboardType = UIKeyboardTypeURL;
         f.autocapitalizationType = UITextAutocapitalizationTypeNone;
@@ -1481,10 +1612,13 @@ static NSString *linkName(LinkKind k)
     __weak UIAlertController *weakAlert = a;
     __weak ViewController *weakSelf = self;
     [a addAction:[UIAlertAction actionWithTitle:L(@"Cancel") style:UIAlertActionStyleCancel handler:nil]];
-    if ([NSUserDefaults.standardUserDefaults stringForKey:kPairAddressKey].length)
+    if ([c[kPairAddressKey] length])
         [a addAction:[UIAlertAction actionWithTitle:L(@"As set on the computer") style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *x) {
-            [NSUserDefaults.standardUserDefaults removeObjectForKey:kAddressKey];
+            editComputer(key, NO, ^BOOL(NSMutableDictionary *m) {
+                [m removeObjectForKey:kAddressKey];
+                return YES;
+            });
             [weakSelf refreshSettingsNetwork];
         }]];
     [a addAction:[UIAlertAction actionWithTitle:L(@"Save") style:UIAlertActionStyleDefault
@@ -1492,10 +1626,58 @@ static NSString *linkName(LinkKind k)
         NSString *s = [weakAlert.textFields.firstObject.text
             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         /* Empty means "nothing", even if the host suggested an address. */
-        [NSUserDefaults.standardUserDefaults setObject:s forKey:kAddressKey];
+        editComputer(key, NO, ^BOOL(NSMutableDictionary *m) {
+            m[kAddressKey] = s;
+            return YES;
+        });
         [weakSelf refreshSettingsNetwork];
     }]];
     [self presentViewController:a animated:YES completion:nil];
+}
+
+/* Switch to another paired computer, or forget one. */
+- (void)editComputers
+{
+    NSArray<NSDictionary *> *list = computers();
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:L(@"Paired computers")
+                         message:L(@"Over Wi-Fi the iPad connects to the one used last. "
+                                   @"To add a computer, connect the iPad to it by cable once.")
+                  preferredStyle:UIAlertControllerStyleAlert];
+    __weak ViewController *weakSelf = self;
+    for (NSUInteger i = 1; i < list.count; i++) {
+        NSData *key = list[i][kKeyKey];
+        [a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:L(@"Connect to “%@”"),
+                                                                                computerName(list[i])]
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *x) {
+            editComputer(key, YES, ^BOOL(NSMutableDictionary *m) { return YES; });
+            [weakSelf switchedComputers];
+        }]];
+    }
+    for (NSDictionary *c in list) {
+        NSData *key = c[kKeyKey];
+        [a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:L(@"Forget “%@”"), computerName(c)]
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *x) {
+            BOOL current = c == list[0];
+            editComputer(key, NO, ^BOOL(NSMutableDictionary *m) { return NO; });
+            if (current)
+                [weakSelf switchedComputers];
+            else
+                [weakSelf refreshSettingsNetwork];
+        }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:L(@"Cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+/* The first computer changed: a Wi-Fi/internet session with another one ends (the cable stays). */
+- (void)switchedComputers
+{
+    if (_link == LinkLAN || _link == LinkInternet)
+        [_conn dropNetwork];
+    [self refreshSettingsNetwork];
 }
 
 - (void)sendSettings
@@ -1604,6 +1786,7 @@ static NSString *linkName(LinkKind k)
     };
     _settings.onClose = ^{ [weakSelf toggleSettings]; };
     _settings.onEditAddress = ^{ [weakSelf editAddress]; };
+    _settings.onComputers = ^{ [weakSelf editComputers]; };
     _settings.onLog = ^{ [weakSelf showLog]; };
     _settings.onKeyboard = ^{
         [weakSelf toggleSettings];

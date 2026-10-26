@@ -7,6 +7,8 @@
 "Can't read the address “%@”" = "Не понимаю адрес «%@»";
 "“%@” is not on this Wi-Fi nor at %@. Retrying…" = "«%@» не найден ни в этой сети Wi-Fi, ни по адресу %@. Повтор…";
 "“%@” is not on this Wi-Fi. Retrying…" = "«%@» не найден в этой сети Wi-Fi. Повтор…";
+"Looking for your computers on this Wi-Fi…" = "Поиск ваших компьютеров в сети Wi-Fi…";
+"None of your computers answers. Retrying…" = "Ни один из ваших компьютеров не отвечает. Повтор…";
 "Connector needs re-signing" = "Connector: продлите подпись";
 "The app stops opening on %@. Plug the iPad into the computer and run ipad-install from Connector." = "Приложение перестанет открываться %@. Подключите iPad к компьютеру кабелем и запустите ipad-install из Connector.";
 "Settings" = "Настройки";
@@ -35,6 +37,11 @@
 "Three fingers: settings · four fingers: keyboard · two-finger hold: middle click" = "Три пальца — настройки · четыре — клавиатура · удержание двумя — средняя кнопка";
 "Done" = "Готово";
 "Internet address: %@ (change)" = "Адрес в интернете: %@ (изменить)";
+"Computers: %@ (change)" = "Компьютеры: %@ (изменить)";
+"Paired computers" = "Сопряжённые компьютеры";
+"Over Wi-Fi the iPad connects to the one used last. To add a computer, connect the iPad to it by cable once." = "По Wi-Fi iPad подключается к тому, с которым работал последним. Чтобы добавить компьютер, один раз подключите iPad к нему кабелем.";
+"Connect to “%@”" = "Подключиться к «%@»";
+"Forget “%@”" = "Забыть «%@»";
 "not set" = "не задан";
 "Waiting for the computer" = "Ожидание подключения";
 "by cable" = "по кабелю";
@@ -47,7 +54,7 @@
 "Computer “%@”, now %@." = "Компьютер «%@», сейчас %@.";
 "Not paired yet: connect the iPad by cable once." = "Не связан с компьютером: подключите iPad кабелем один раз.";
 "%@ · %d fps" = "%@ · %d к/с";
-"Internet address" = "Адрес в интернете";
+"Internet address of “%@”" = "Адрес «%@» в интернете";
 "Name or IP and port of the computer as reachable from the internet, for example myhome.example.com:27183. Not needed on the same Wi-Fi." = "Имя или IP компьютера и порт, доступные из интернета, например myhome.example.com:27183. В той же сети Wi-Fi адрес не нужен.";
 "name-or-ip:27183" = "имя-или-ip:27183";
 "Cancel" = "Отмена";
