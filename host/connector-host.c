@@ -905,7 +905,10 @@ static int net_init(void)
         return 0;
     SSL_CTX_set_min_proto_version(net.tls, TLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(net.tls, TLS1_2_VERSION);
-    SSL_CTX_set_options(net.tls, SSL_OP_NO_RENEGOTIATION | SSL_OP_IGNORE_UNEXPECTED_EOF);
+    SSL_CTX_set_options(net.tls, SSL_OP_NO_RENEGOTIATION);
+#ifdef SSL_OP_IGNORE_UNEXPECTED_EOF /* OpenSSL 3; 1.1 (Ubuntu 20.04) reports such an EOF as SSL_ERROR_SYSCALL */
+    SSL_CTX_set_options(net.tls, SSL_OP_IGNORE_UNEXPECTED_EOF);
+#endif
     SSL_CTX_set_mode(net.tls, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     if (SSL_CTX_set_cipher_list(net.tls, "PSK-AES128-GCM-SHA256") != 1) {
         logmsg("OpenSSL has no PSK-AES128-GCM-SHA256");

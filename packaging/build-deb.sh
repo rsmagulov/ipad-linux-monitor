@@ -11,7 +11,9 @@ ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
 chmod 755 "$ROOT"
 
-ios/build.sh || echo "warning: no iPad app in the package (no iOS SDK, see README)" >&2
+# KEEP_IPA=1 packs the ios/Connector.ipa already there (build-debs.sh: no iOS SDK in its containers).
+[ "$KEEP_IPA" = 1 ] && [ -f ios/Connector.ipa ] ||
+    ios/build.sh || echo "warning: no iPad app in the package (no iOS SDK, see README)" >&2
 make install DESTDIR="$ROOT" PREFIX=/usr
 install -D -m644 scripts/70-connector.rules "$ROOT/usr/lib/udev/rules.d/70-connector.rules"
 install -D -m644 packaging/ufw-connector "$ROOT/etc/ufw/applications.d/connector"
