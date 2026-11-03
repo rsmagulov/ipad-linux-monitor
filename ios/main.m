@@ -38,7 +38,24 @@
 
 #include "../host/protocol.h"
 
-#define L(s) NSLocalizedString(s, nil)
+/* Language of the app's own text: the "language" setting (0 as the iPad,
+ * 1 English, 2 Russian) picks the .lproj; English is the key itself. */
+static NSString *const kLanguageKey = @"language";
+static NSBundle *gStrings;
+
+static void resetLanguage(void) { gStrings = nil; }
+
+static NSString *localized(NSString *s)
+{
+    if (!gStrings) {
+        NSInteger lang = [NSUserDefaults.standardUserDefaults integerForKey:kLanguageKey];
+        NSString *path = lang == 1 ? [NSBundle.mainBundle pathForResource:@"en" ofType:@"lproj"]
+                       : lang == 2 ? [NSBundle.mainBundle pathForResource:@"ru" ofType:@"lproj"] : nil;
+        gStrings = (path ? [NSBundle bundleWithPath:path] : nil) ?: NSBundle.mainBundle;
+    }
+    return [gStrings localizedStringForKey:s value:s table:nil];
+}
+#define L(s) localized(s)
 
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 
@@ -1101,14 +1118,17 @@ static void scheduleResignReminders(NSDate *expires)
 @property(nonatomic, copy) void (^onComputers)(void);
 @property(nonatomic, copy) void (^onKeyboard)(void);
 @property(nonatomic, copy) void (^onLog)(void);
+@property(nonatomic, copy) void (^onLanguage)(void);
 - (void)setNetworkLine:(NSString *)line address:(NSString *)address computers:(NSString *)names;
 - (void)fitInto:(CGSize)size;
+- (CGPoint)scrollOffset;
+- (void)setScrollOffset:(CGPoint)offset;
 @end
 
 @implementation SettingsPanel {
     UIScrollView *_scroll;
     CGFloat _contentHeight;
-    UISegmentedControl *_mirror, *_scale, *_quality, *_orientation, *_trackpad, *_indicator;
+    UISegmentedControl *_language, *_mirror, *_scale, *_quality, *_orientation, *_trackpad, *_indicator;
     UILabel *_networkLine;
     UIButton *_address, *_computers;
 }
@@ -1128,6 +1148,13 @@ static void scheduleResignReminders(NSDate *expires)
         CGFloat y = 24;
         UILabel *title = [self label:L(@"Settings") y:y size:24 bold:YES];
         y = CGRectGetMaxY(title.frame) + 18;
+
+        /* in both languages, so it can be found whichever one is on */
+        y = [self section:@"Язык · Language"
+                    items:@[L(@"As on the iPad"), @"English", @"Русский"]
+                 selected:settingInt(kLanguageKey, 0) y:y control:&_language];
+        [_language removeTarget:self action:@selector(changed) forControlEvents:UIControlEventValueChanged];
+        [_language addTarget:self action:@selector(languageChanged) forControlEvents:UIControlEventValueChanged];
 
         y = [self section:L(@"iPad screen")
                     items:@[L(@"Second monitor"), L(@"Mirror the computer")]
@@ -1206,6 +1233,9 @@ static void scheduleResignReminders(NSDate *expires)
     self.center = CGPointMake(size.width / 2, size.height / 2);
 }
 
+- (CGPoint)scrollOffset { return _scroll.contentOffset; }
+- (void)setScrollOffset:(CGPoint)offset { _scroll.contentOffset = offset; }
+
 - (UILabel *)label:(NSString *)text y:(CGFloat)y size:(CGFloat)size bold:(BOOL)bold
 {
     UILabel *l = [[UILabel alloc] initWithFrame:CGRectMake(24, y, self.bounds.size.width - 48, size + 8)];
@@ -1260,6 +1290,15 @@ static void scheduleResignReminders(NSDate *expires)
            (int)_orientation.selectedSegmentIndex, (int)_trackpad.selectedSegmentIndex);
     if (self.onChange)
         self.onChange();
+}
+
+- (void)languageChanged
+{
+    [NSUserDefaults.standardUserDefaults setInteger:_language.selectedSegmentIndex forKey:kLanguageKey];
+    APPLOG(@"settings: language %d", (int)_language.selectedSegmentIndex);
+    resetLanguage();
+    if (self.onLanguage)
+        self.onLanguage();
 }
 
 - (void)close
@@ -1788,6 +1827,20 @@ static NSString *linkName(LinkKind k)
     _settings.onEditAddress = ^{ [weakSelf editAddress]; };
     _settings.onComputers = ^{ [weakSelf editComputers]; };
     _settings.onLog = ^{ [weakSelf showLog]; };
+    _settings.onLanguage = ^{
+        /* rebuild the panel in the new language, keeping its scroll position;
+         * later, not from inside the panel's own control action */
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ViewController *s = weakSelf;
+            if (!s || !s->_settings)
+                return;
+            CGPoint offset = [s->_settings scrollOffset];
+            [s toggleSettings];
+            [s toggleSettings];
+            [s->_settings setScrollOffset:offset];
+            [s updateIndicator];
+        });
+    };
     _settings.onKeyboard = ^{
         [weakSelf toggleSettings];
         [weakSelf toggleKeyboard];
